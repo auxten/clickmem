@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clickmem"
+version = "0.1.0"
+description = "Three-layer, self-maintaining, locally searchable memory for OpenClaw agents"
+requires-python = ">=3.10"
+dependencies = [
+    "chdb>=0.15.0",
+    "typer>=0.9.0",
+    "rich>=13.0",
+    "sentence-transformers>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "hypothesis>=6.0",
+    "freezegun>=1.0",
+]
+
+[project.scripts]
+memory = "memory_core.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests requiring real chDB",
+    "property_based: marks Hypothesis property-based tests",
+    "semantic: marks semantic distance tests requiring real embedding model",
+]
+
+[tool.coverage.run]
+source = ["memory_core"]
+
+[tool.coverage.report]
+show_missing = true
