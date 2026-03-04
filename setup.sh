@@ -79,13 +79,33 @@ else
     echo "▸ No ~/.openclaw directory found, skipping history import."
 fi
 
-# ── 5. Install OpenClaw hook (if openclaw is installed) ──────────────
+# ── 5. Install OpenClaw hook ──────────────────────────────────────────
 
-if command -v openclaw &>/dev/null; then
+OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+if [ -f "$OPENCLAW_CONFIG" ]; then
     echo "▸ Installing OpenClaw hook..."
-    openclaw hooks install "$SCRIPT_DIR/clickmem-hook" --link || true
+    # OpenClaw's loadHooksFromDir scans subdirectories of extraDirs entries,
+    # so we add the project root (which contains clickmem-hook/ subdirectory).
+    python3 -c "
+import json, sys
+cfg_path = '$OPENCLAW_CONFIG'
+project_dir = '$SCRIPT_DIR'
+with open(cfg_path) as f:
+    cfg = json.load(f)
+hooks = cfg.setdefault('hooks', {}).setdefault('internal', {})
+hooks['enabled'] = True
+load = hooks.setdefault('load', {})
+extra = load.setdefault('extraDirs', [])
+if project_dir not in extra:
+    extra.append(project_dir)
+entries = hooks.setdefault('entries', {})
+entries.setdefault('clickmem-hook', {'enabled': True})
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('  Hook registered in', cfg_path)
+" || echo "  Warning: failed to register hook"
 else
-    echo "▸ openclaw CLI not found, skipping hook installation."
+    echo "▸ No ~/.openclaw/openclaw.json found, skipping hook installation."
 fi
 
 # ── 6. Done ──────────────────────────────────────────────────────────

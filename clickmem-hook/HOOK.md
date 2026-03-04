@@ -1,17 +1,31 @@
-# ClickMem Hook for OpenClaw
+---
+name: clickmem-hook
+description: "Local semantic memory powered by chDB + Qwen3-0.6B embedding"
+homepage: https://github.com/auxten/clickmem
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🧠",
+        "events": ["agent:bootstrap", "command:new", "command:reset"],
+        "install": [{ "id": "path", "kind": "path", "label": "Linked from clickmem" }],
+      },
+  }
+---
+
+# ClickMem Hook
 
 Three-layer, self-maintaining memory for OpenClaw agents.
 
-## Events
+## What It Does
 
-- `agent:bootstrap` — Export memory context into workspace on session start
-- `command:new` — Export fresh context when a new command session begins
-- `command:reset` — Re-export context after session reset
+On `agent:bootstrap`, `command:new`, or `command:reset`:
 
-## Metadata
+1. Exports L2 semantic memories to `<workspace>/MEMORY.md`
+2. Exports today's L1 episodic memories to `<workspace>/memory/YYYY-MM-DD.md`
 
-- **name**: clickmem
-- **version**: 0.1.0
-- **description**: Local semantic memory powered by chDB + Qwen3-0.6B embedding
-- **author**: auxten
-- **repository**: https://github.com/auxten/clickmem
+This gives the agent full context of your long-term knowledge and recent events at session start.
+
+## Requirements
+
+- clickmem installed (`~/clickmem/.venv/bin/memory` must exist)

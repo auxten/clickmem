@@ -430,14 +430,24 @@ def uninstall(
             console.print("Aborted.")
             raise typer.Exit(code=0)
 
-    # ── 3. Remove OpenClaw hook ───────────────────────────────────────
-    if shutil.which("openclaw"):
+    # ── 3. Remove OpenClaw hook from config ──────────────────────────
+    openclaw_config = os.path.expanduser("~/.openclaw/openclaw.json")
+    if os.path.isfile(openclaw_config):
         try:
-            import subprocess
-            subprocess.run(
-                ["openclaw", "hooks", "uninstall", "clickmem"],
-                capture_output=True, timeout=10,
-            )
+            with open(openclaw_config) as f:
+                cfg = json.load(f)
+            hooks = cfg.get("hooks", {}).get("internal", {})
+            # Remove from extraDirs
+            extra = hooks.get("load", {}).get("extraDirs", [])
+            # Find and remove any path containing "clickmem"
+            new_extra = [d for d in extra if "clickmem" not in d]
+            if len(new_extra) != len(extra):
+                hooks.get("load", {})["extraDirs"] = new_extra
+            # Remove from entries
+            entries = hooks.get("entries", {})
+            entries.pop("clickmem-hook", None)
+            with open(openclaw_config, "w") as f:
+                json.dump(cfg, f, indent=2)
             result["hook_removed"] = True
         except Exception:
             pass
