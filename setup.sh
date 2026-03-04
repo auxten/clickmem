@@ -108,7 +108,45 @@ else
     echo "▸ No ~/.openclaw/openclaw.json found, skipping hook installation."
 fi
 
-# ── 6. Done ──────────────────────────────────────────────────────────
+# ── 6. Install skill (slash command) ─────────────────────────────────
+
+SKILL_SRC="$SCRIPT_DIR/skills/clickmem/SKILL.md"
+
+# Claude Code: symlink into ~/.claude/commands/
+CLAUDE_CMD_DIR="$HOME/.claude/commands"
+if [ -d "$HOME/.claude" ]; then
+    echo "▸ Installing Claude Code skill..."
+    mkdir -p "$CLAUDE_CMD_DIR"
+    CLAUDE_LINK="$CLAUDE_CMD_DIR/clickmem.md"
+    if [ -L "$CLAUDE_LINK" ] || [ -f "$CLAUDE_LINK" ]; then
+        rm "$CLAUDE_LINK"
+    fi
+    ln -s "$SKILL_SRC" "$CLAUDE_LINK"
+    echo "  Skill linked: $CLAUDE_LINK → $SKILL_SRC"
+else
+    echo "▸ No ~/.claude directory found, skipping Claude Code skill installation."
+fi
+
+# OpenClaw: add skills/ to openclaw.json skills directories
+if [ -f "$OPENCLAW_CONFIG" ]; then
+    echo "▸ Registering skill with OpenClaw..."
+    python3 -c "
+import json
+cfg_path = '$OPENCLAW_CONFIG'
+skills_dir = '$SCRIPT_DIR/skills'
+with open(cfg_path) as f:
+    cfg = json.load(f)
+skills = cfg.setdefault('skills', {})
+extra = skills.setdefault('extraDirs', [])
+if skills_dir not in extra:
+    extra.append(skills_dir)
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('  Skill directory registered in', cfg_path)
+" || echo "  Warning: failed to register skill directory"
+fi
+
+# ── 7. Done ──────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════════"
@@ -120,6 +158,8 @@ echo "   memory status              # Show memory statistics"
 echo "   memory remember \"...\"      # Store a memory"
 echo "   memory recall \"query\"      # Semantic search"
 echo "   memory review              # Browse memories"
+echo ""
+echo " Skill: /clickmem available in Claude Code"
 echo ""
 echo " Or use the full path:"
 echo "   $SCRIPT_DIR/.venv/bin/memory status"
