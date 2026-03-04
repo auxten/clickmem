@@ -31,21 +31,33 @@ SCRIPT_DIR="$(pwd)"
 
 echo "▸ Checking environment..."
 
-# Python >= 3.10
-if ! command -v python3 &>/dev/null; then
-    echo "Error: python3 not found. Install Python 3.10+ first."
-    exit 1
-fi
+# Python >= 3.10 — try python3, then versioned binaries (python3.13 down to 3.10)
+PYTHON=""
+for candidate in python3 python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" &>/dev/null; then
+        PY_VERSION=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+        PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+        if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 10 ]; then
+            PYTHON="$candidate"
+            break
+        fi
+    fi
+done
 
-PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
-PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
-    echo "Error: Python >= 3.10 required (found $PY_VERSION)"
-    exit 1
+if [ -z "$PYTHON" ]; then
+    # As a last resort, let uv install Python automatically
+    if command -v uv &>/dev/null; then
+        echo "  No Python >= 3.10 found; letting uv install one..."
+        uv python install 3.12
+        PYTHON="python3.12"
+        PY_VERSION="3.12"
+    else
+        echo "Error: Python >= 3.10 not found. Install Python 3.10+ or uv first."
+        exit 1
+    fi
 fi
-echo "  Python $PY_VERSION"
+echo "  Python $PY_VERSION ($PYTHON)"
 
 # uv
 if ! command -v uv &>/dev/null; then
@@ -58,7 +70,7 @@ echo "  uv $(uv --version 2>/dev/null | head -1)"
 # ── 2. Install dependencies ─────────────────────────────────────────
 
 echo "▸ Installing dependencies..."
-uv sync --python python3 --extra dev
+uv sync --python "$PYTHON" --extra dev
 
 # ── 3. Smoke test ────────────────────────────────────────────────────
 
