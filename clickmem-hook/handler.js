@@ -2,16 +2,16 @@
  * ClickMem Hook Handler for OpenClaw
  *
  * Bridges OpenClaw events to the clickmem CLI:
- * - On bootstrap/new: exports memory context to the workspace
- * - On session end: stores session summary as episodic memory
+ * - On bootstrap/new/reset: exports memory context to the workspace
  */
 
-const { execFileSync } = require("child_process");
-const path = require("path");
+import { execFileSync } from "child_process";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 
-// Resolve the memory CLI from the clickmem venv
-const CLICKMEM_ROOT = path.resolve(__dirname, "..");
-const MEMORY_BIN = path.join(CLICKMEM_ROOT, ".venv", "bin", "memory");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLICKMEM_ROOT = resolve(__dirname, "..");
+const MEMORY_BIN = join(CLICKMEM_ROOT, ".venv", "bin", "memory");
 
 function run(args, options = {}) {
   try {
@@ -29,14 +29,15 @@ function run(args, options = {}) {
 }
 
 /**
- * Handle OpenClaw events.
- * @param {string} event - Event name (e.g. "agent:bootstrap")
- * @param {object} context - Event context from OpenClaw
+ * Handle OpenClaw hook events.
+ * @param {object} event - Hook event: {type, action, sessionKey, context, timestamp, messages}
  */
-function handle(event, context) {
-  const workspacePath = context.workspacePath || context.workspace_path || "";
+export default function handle(event) {
+  const eventKey = `${event.type}:${event.action}`;
+  const workspacePath =
+    event.context?.workspacePath || event.context?.workspace_path || "";
 
-  switch (event) {
+  switch (eventKey) {
     case "agent:bootstrap":
     case "command:new":
     case "command:reset":
@@ -46,9 +47,6 @@ function handle(event, context) {
       break;
 
     default:
-      // Unknown event — ignore silently
       break;
   }
 }
-
-module.exports = { handle };
