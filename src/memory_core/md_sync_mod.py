@@ -47,8 +47,11 @@ class md_sync:
                 lines.append(header)
                 total_chars += len(header)
                 # Sort by recency within category (newest first), then content for stability
-                for m in sorted(by_category[cat], key=lambda x: x.content):
+                sorted_mems = sorted(by_category[cat], key=lambda x: x.content)
+                for i, m in enumerate(sorted_mems):
                     entry = f"- {m.content}\n"
+                    if i < len(sorted_mems) - 1:
+                        entry += "---\n"
                     if total_chars + len(entry) > max_chars:
                         lines.append(f"\n_... truncated at {max_chars} chars_\n")
                         return "".join(lines)
@@ -118,6 +121,7 @@ class md_sync:
                     entry += f"Tags: {', '.join(m.tags)}\n"
                 if m.category:
                     entry += f"Category: {m.category}\n"
+                entry += "---\n"
 
                 if total_chars + len(entry) > max_chars:
                     lines.append(f"\n_... truncated at {max_chars} chars_\n")
