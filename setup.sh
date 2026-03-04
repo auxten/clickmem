@@ -9,6 +9,10 @@ set -euo pipefail
 
 INSTALL_DIR="${CLICKMEM_DIR:-$HOME/clickmem}"
 
+# Close stdin early — curl-pipe leaves stdin connected to the script content,
+# which confuses chDB's INSERT parser (it reads from stdin for VALUES data).
+exec 0</dev/null
+
 # Detect curl-pipe mode: BASH_SOURCE is unset/empty when piped
 if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" = "bash" ]; then
     # Running via: curl ... | bash
@@ -60,13 +64,14 @@ echo "  uv $(uv --version 2>/dev/null | head -1)"
 echo "▸ Installing dependencies..."
 uv sync --python python3 --extra dev
 
-# ── 3. Quick test (skip semantic tests to save time) ─────────────────
+# ── 3. Smoke test ────────────────────────────────────────────────────
 
-echo "▸ Running quick tests..."
-if uv run pytest tests/ -m "not semantic" -q; then
-    echo "  All tests passed."
+echo "▸ Smoke test..."
+if uv run memory status --json >/dev/null 2>&1; then
+    echo "  CLI works."
 else
-    echo "Warning: Some tests failed. Check output above."
+    echo "Error: smoke test failed — 'memory status' returned non-zero."
+    exit 1
 fi
 
 # ── 4. Import OpenClaw history (if present) ──────────────────────────
