@@ -9,10 +9,6 @@ set -euo pipefail
 
 INSTALL_DIR="${CLICKMEM_DIR:-$HOME/clickmem}"
 
-# Close stdin early — curl-pipe leaves stdin connected to the script content,
-# which confuses chDB's INSERT parser (it reads from stdin for VALUES data).
-exec 0</dev/null
-
 # Detect curl-pipe mode: BASH_SOURCE is unset/empty when piped
 if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" = "bash" ]; then
     # Running via: curl ... | bash
@@ -67,7 +63,7 @@ uv sync --python python3 --extra dev
 # ── 3. Smoke test ────────────────────────────────────────────────────
 
 echo "▸ Smoke test..."
-if uv run memory status --json >/dev/null 2>&1; then
+if uv run memory status --json < /dev/null >/dev/null 2>&1; then
     echo "  CLI works."
 else
     echo "Error: smoke test failed — 'memory status' returned non-zero."
@@ -78,7 +74,7 @@ fi
 
 if [ -d "$HOME/.openclaw" ]; then
     echo "▸ Importing OpenClaw history from ~/.openclaw ..."
-    uv run memory import-openclaw --json || true
+    uv run memory import-openclaw --json < /dev/null || true
 else
     echo "▸ No ~/.openclaw directory found, skipping history import."
 fi
