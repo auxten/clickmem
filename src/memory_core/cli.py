@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from typing import Optional
@@ -51,6 +52,7 @@ def remember(
     layer: str = typer.Option("semantic", help="Memory layer: working, episodic, semantic"),
     category: str = typer.Option("knowledge", help="Memory category"),
     tags: Optional[str] = typer.Option(None, help="Comma-separated tags"),
+    no_upsert: bool = typer.Option(False, "--no-upsert", help="Skip smart upsert, force insert"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Store a memory."""
@@ -71,28 +73,68 @@ def remember(
             console.print(f"[green]✓[/green] Working memory updated.")
         return
 
-    m = Memory(
-        content=content,
-        layer=layer,
-        category=category,
-        tags=tag_list,
-        embedding=emb.encode_document(content),
-        source="cli",
-    )
-    db.insert(m)
+    if no_upsert or layer == "episodic":
+        # Direct insert (current behavior)
+        m = Memory(
+            content=content,
+            layer=layer,
+            category=category,
+            tags=tag_list,
+            embedding=emb.encode_document(content),
+            source="cli",
+        )
+        db.insert(m)
+
+        if json_output:
+            typer.echo(json.dumps({
+                "id": m.id,
+                "layer": layer,
+                "category": category,
+                "status": "stored",
+            }))
+        else:
+            console.print(
+                f"[green]✓[/green] Stored [{layer}/{category}]: {content}\n"
+                f"  id={m.id[:8]}  tags={','.join(tag_list)}"
+            )
+        return
+
+    # Smart upsert for semantic (and other non-episodic, non-working) layers
+    from memory_core.upsert import upsert
+    from memory_core.llm import get_llm_complete
+    llm = get_llm_complete()
+    result = upsert(db, emb, content, layer, category, tag_list, llm_complete=llm)
 
     if json_output:
         typer.echo(json.dumps({
-            "id": m.id,
+            "action": result.action,
+            "id": result.added_id,
             "layer": layer,
             "category": category,
             "status": "stored",
+            "updated": result.updated,
+            "deleted": result.deleted,
         }))
     else:
-        console.print(
-            f"[green]✓[/green] Stored [{layer}/{category}]: {content}\n"
-            f"  id={m.id[:8]}  tags={','.join(tag_list)}"
-        )
+        if result.action in ("ADD", "FALLBACK_ADD"):
+            console.print(
+                f"[green]✓[/green] Stored [{layer}/{category}]: {content}\n"
+                f"  id={result.added_id[:8] if result.added_id else '?'}  tags={','.join(tag_list)}"
+            )
+        elif result.action == "UPSERT":
+            console.print(f"[green]✓[/green] Upserted [{layer}/{category}]: {content}")
+            if result.added_id:
+                console.print(f"  Added: {result.added_id[:8]}")
+            for u in result.updated:
+                console.print(f"  Updated: {u['id'][:8]} → {u['new_content'][:60]}")
+            for d in result.deleted:
+                console.print(f"  Deleted: {d[:8]}")
+        elif result.action == "MERGED":
+            console.print(f"[green]✓[/green] Merged into existing memory")
+            for u in result.updated:
+                console.print(f"  Updated: {u['id'][:8]} → {u['new_content'][:60]}")
+        else:
+            console.print(f"[green]✓[/green] No changes needed (existing memory sufficient)")
 
 
 @app.command()
@@ -135,29 +177,48 @@ def recall(
             console.print(f"  [{cat}] {r['content']}  (score={score:.2f})")
 
 
+_UUID_PATTERN = re.compile(r'^[0-9a-f]{8}(-[0-9a-f]{4}){0,3}', re.IGNORECASE)
+
+
 @app.command()
 def forget(
-    memory_id: str = typer.Argument(..., help="Memory ID or prefix"),
+    memory_id: str = typer.Argument(..., help="Memory ID, prefix, or content description"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Delete a memory."""
+    """Delete a memory by ID, prefix, or content search."""
     db = _get_db()
+    m = None
 
-    # Try exact match first
-    m = db.get(memory_id)
+    looks_like_uuid = bool(_UUID_PATTERN.match(memory_id))
+
+    if looks_like_uuid:
+        # 1. Try exact UUID match
+        m = db.get(memory_id)
+        if m is None:
+            # 2. Try prefix match
+            rows = db.query(
+                f"SELECT id FROM memories "
+                f"WHERE startsWith(id, '{db._escape(memory_id)}') AND is_active = 1 LIMIT 1"
+            )
+            if rows:
+                memory_id = rows[0]["id"]
+                m = db.get(memory_id)
+
     if m is None:
-        # Try prefix match
-        rows = db.query(
-            f"SELECT id, content, layer, category FROM memories "
-            f"WHERE startsWith(id, '{db._escape(memory_id)}') AND is_active = 1 LIMIT 1"
-        )
-        if rows:
-            memory_id = rows[0]["id"]
-            m = db.get(memory_id)
+        # 3. Content search fallback
+        emb = _get_emb()
+        from memory_core.retrieval import hybrid_search
+        cfg = RetrievalConfig(top_k=1, layer="semantic")
+        results = hybrid_search(db, emb, memory_id, cfg=cfg)
+        if results and results[0].get("final_score", 0) > 0.3:
+            found_id = results[0]["id"]
+            m = db.get(found_id)
+            if m:
+                memory_id = found_id
 
     if m is None:
         if json_output:
-            typer.echo(json.dumps({"error": "not found"}))
+            typer.echo(json.dumps({"error": "not found", "query": memory_id}))
         else:
             console.print(f"[red]Error: Memory not found: {memory_id}[/red]")
         raise typer.Exit(code=1)
@@ -165,7 +226,7 @@ def forget(
     db.deactivate(memory_id)
 
     if json_output:
-        typer.echo(json.dumps({"id": memory_id, "status": "deleted"}))
+        typer.echo(json.dumps({"id": memory_id, "content": m.content, "status": "deleted"}))
     else:
         console.print(
             f"[green]✓[/green] Forgotten: {memory_id[:8]} "
