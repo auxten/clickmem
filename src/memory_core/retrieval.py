@@ -37,39 +37,20 @@ def _time_decay(created_at: datetime | None, half_life_days: float) -> float:
     return math.exp(-math.log(2) * age_days / half_life_days)
 
 
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "what", "who", "where", "when", "how", "why", "which", "that", "this",
-    "it", "its", "in", "on", "at", "to", "for", "of", "with", "by", "from",
-    "do", "does", "did", "have", "has", "had", "can", "could", "will",
-    "would", "shall", "should", "may", "might", "and", "or", "but", "not",
-    "no", "so", "if", "then", "than", "about", "into", "over", "after",
-    "i", "me", "my", "we", "our", "you", "your", "he", "she", "they",
-    "的", "是", "了", "在", "吗", "什么", "怎么", "哪", "那", "这",
-})
-
-
 def _keyword_score(content: str, tags: list[str], query_words: list[str],
                    entities: list[str] | None = None) -> float:
-    """Keyword matching score over content, tags, and entities. Returns [0, 1].
-
-    Stop words are excluded so that queries like "what is amynote" score
-    primarily on the meaningful term "amynote" rather than ubiquitous words.
-    """
-    meaningful = [w for w in query_words if w.lower() not in _STOP_WORDS]
-    if not meaningful:
-        meaningful = query_words
-    if not meaningful:
+    """Keyword matching score over content, tags, and entities. Returns [0, 1]."""
+    if not query_words:
         return 0.0
     content_lower = content.lower()
     tag_set = {t.lower() for t in tags}
     entity_set = {e.lower() for e in (entities or [])}
     hits = 0
-    for w in meaningful:
+    for w in query_words:
         wl = w.lower()
         if wl in content_lower or wl in tag_set or wl in entity_set:
             hits += 1
-    return hits / len(meaningful)
+    return hits / len(query_words)
 
 
 def _popularity_boost(access_count: int) -> float:
@@ -124,6 +105,39 @@ def recency_score(
     return 0.8 + 0.2 * raw
 
 
+_NOISE_PATTERNS = [
+    re.compile(r"\[cron:[0-9a-f-]+"),
+    re.compile(r"A new session was started via /new"),
+    re.compile(r"<clickmem-context>"),
+    re.compile(r"Execute your Session Startup sequence"),
+    re.compile(r"Current time: .+\(Asia/"),
+]
+_NOISE_PENALTY = 0.3
+
+
+def _noise_penalty(content: str) -> float:
+    """Return a score multiplier < 1 for system/operational noise content."""
+    for pat in _NOISE_PATTERNS:
+        if pat.search(content):
+            return _NOISE_PENALTY
+    return 1.0
+
+
+_RECENCY_HINT_RE = re.compile(
+    r"recently|recent|latest|last\s+(?:few\s+)?(?:day|week|month)|"
+    r"最近|近期|上周|这周|今天|昨天|过去几天",
+    re.IGNORECASE,
+)
+_RECENCY_DECAY_DAYS = 7.0
+
+
+def _detect_recency_hint(query: str) -> float | None:
+    """Return a shorter decay half-life if the query implies recency."""
+    if _RECENCY_HINT_RE.search(query):
+        return _RECENCY_DECAY_DAYS
+    return None
+
+
 def _tokenize_query(query: str) -> list[str]:
     """Split query into searchable words."""
     return [w for w in re.split(r"\s+", query.strip()) if w]
@@ -146,16 +160,28 @@ def hybrid_search(
     query_words = _tokenize_query(query)
     query_vec = emb.encode_query(query) if query.strip() else None
 
+    recency_decay = _detect_recency_hint(query)
+    if recency_decay is not None:
+        cfg = RetrievalConfig(
+            top_k=cfg.top_k, w_vector=cfg.w_vector, w_keyword=cfg.w_keyword,
+            decay_days=recency_decay, mmr_lambda=cfg.mmr_lambda,
+            semantic_boost=cfg.semantic_boost,
+            layer=cfg.layer, category=cfg.category,
+        )
+
     # Determine which layers to search
     if cfg.layer:
         layers = [cfg.layer]
     else:
         layers = ["episodic", "semantic"]
 
-    # Fetch candidates from all applicable layers
+    # Fetch candidates — use SQL-level vector pre-filter when possible
     candidates: list[dict] = []
     for layer in layers:
-        memories = db.list_by_layer(layer, limit=1000)
+        if query_vec:
+            memories = db.search_by_vector(query_vec, layer, limit=200)
+        else:
+            memories = db.list_by_layer(layer, limit=200)
         for m in memories:
             if cfg.category and m.category != cfg.category:
                 continue
@@ -189,12 +215,13 @@ def hybrid_search(
         # Base score: weighted combination
         base_score = cfg.w_vector * vec_score + cfg.w_keyword * kw_score
 
-        # Time decay for episodic memories
+        # Layer-specific modifiers
         if c["layer"] == "episodic":
-            decay = _time_decay(c["created_at"], cfg.decay_days)
-            base_score *= decay
+            base_score *= _time_decay(c["created_at"], cfg.decay_days)
+            base_score *= _noise_penalty(c["content"])
         elif c["layer"] == "semantic":
             base_score *= recency_score(c["created_at"])
+            base_score *= cfg.semantic_boost
 
         # Popularity boost from access frequency
         base_score *= _popularity_boost(c.get("access_count", 0))
