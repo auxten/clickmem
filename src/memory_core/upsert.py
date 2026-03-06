@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -12,6 +13,17 @@ from memory_core.retrieval import hybrid_search
 
 SIMILARITY_THRESHOLD = 0.5
 EPISODIC_DEDUP_THRESHOLD = 0.95
+
+_CONTEXT_BLOCK_RE = re.compile(
+    r"<clickmem-context>.*?</clickmem-context>\s*",
+    re.DOTALL,
+)
+
+
+def _strip_injected_context(content: str) -> str:
+    """Remove <clickmem-context> blocks to prevent feedback loops."""
+    cleaned = _CONTEXT_BLOCK_RE.sub("", content)
+    return cleaned.strip()
 
 UPSERT_PROMPT_TEMPLATE = """\
 Decide how to handle a new memory given existing similar memories.
@@ -78,8 +90,11 @@ def upsert(
     4. Similar results + LLM → LLM decides UPDATE/DELETE/ADD
     5. Similar results + no LLM → fallback INSERT
     """
-    # Episodic: skip insert if a near-identical memory already exists
+    # Episodic: strip injected context, then skip insert if near-identical exists
     if layer == "episodic":
+        content = _strip_injected_context(content)
+        if not content:
+            return UpsertResult(added_id=None, action="NOOP")
         new_embedding = emb.encode_document(content)
         cfg_ep = RetrievalConfig(top_k=3, layer="episodic")
         existing = hybrid_search(db, emb, content, cfg=cfg_ep)
@@ -170,11 +185,5 @@ def upsert(
 
 
 def _update_embedding(db: MemoryDB, memory_id: str, embedding: list[float]) -> None:
-    """Update the embedding of a memory in-place."""
-    emb_literal = db._float_array_literal(embedding)
-    now = db._now_str()
-    db._session.query(
-        f"ALTER TABLE memories UPDATE embedding = {emb_literal}, updated_at = '{now}' "
-        f"WHERE id = '{db._escape(memory_id)}'"
-    )
-    db._session.query("OPTIMIZE TABLE memories FINAL")
+    """Update the embedding of a memory by inserting a new version."""
+    db.update_embedding(memory_id, embedding)
