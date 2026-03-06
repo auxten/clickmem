@@ -93,6 +93,11 @@ class LocalTransport:
             return {"id": mid, "layer": "working", "status": "stored"}
 
         if no_upsert or layer == "episodic":
+            from memory_core.upsert import _strip_injected_context
+            if layer == "episodic":
+                content = _strip_injected_context(content)
+                if not content:
+                    return {"layer": layer, "status": "skipped", "reason": "empty after context strip"}
             m = Memory(
                 content=content, layer=layer, category=category,
                 tags=tag_list, embedding=emb.encode_document(content),
@@ -155,7 +160,7 @@ class LocalTransport:
             m = db.get(memory_id)
             if m is None:
                 rows = db.query(
-                    f"SELECT id FROM memories "
+                    f"SELECT id FROM memories FINAL "
                     f"WHERE startsWith(id, '{db._escape(memory_id)}') AND is_active = 1 LIMIT 1"
                 )
                 if rows:
@@ -300,8 +305,16 @@ class RemoteTransport:
         return self._get("/v1/health")
 
 
+_LOCALHOST_URL = "http://127.0.0.1:9527"
+
+
 def get_transport(remote: str | None = None, api_key: str | None = None) -> LocalTransport | RemoteTransport:
-    """Factory: return RemoteTransport if a remote URL is given, else LocalTransport."""
+    """Factory: return RemoteTransport if a remote URL is given, else LocalTransport.
+
+    When no remote is specified, tries LocalTransport first.  If chDB fails
+    to open (typically because ``memory serve`` already holds the lock),
+    falls back to the local server at 127.0.0.1:9527.
+    """
     remote = remote or os.environ.get("CLICKMEM_REMOTE")
     api_key = api_key or os.environ.get("CLICKMEM_API_KEY", "")
 
@@ -314,4 +327,23 @@ def get_transport(remote: str | None = None, api_key: str | None = None) -> Loca
             remote = found
         return RemoteTransport(remote, api_key=api_key)
 
-    return LocalTransport()
+    try:
+        t = LocalTransport()
+        t._get_db()
+        return t
+    except RuntimeError:
+        import sys
+        try:
+            rt = RemoteTransport(_LOCALHOST_URL, api_key=api_key)
+            rt.health()
+            print(
+                f"chDB locked by server — using {_LOCALHOST_URL}",
+                file=sys.stderr,
+            )
+            return rt
+        except Exception:
+            raise RuntimeError(
+                "Cannot open chDB (locked by another process) and no local "
+                f"server found at {_LOCALHOST_URL}. Start the server with "
+                "'memory serve' or stop the other process."
+            )
