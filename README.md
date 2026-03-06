@@ -27,7 +27,7 @@ AI coding assistants (Claude Code, Cursor, OpenClaw, etc.) forget everything bet
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**One server, all your tools.** Start `memory serve` on any machine and every Claude Code session, Cursor workspace, and OpenClaw agent on the LAN shares the same memory — preferences learned once are recalled everywhere.
+**One server, all your tools.** Start `memory serve` on any machine and every Claude Code session, Cursor workspace, and OpenClaw agent on the LAN shares the same memory — preferences learned once are recalled everywhere. The server keeps embedding and LLM models resident in memory, so recall takes ~0.5s instead of ~11s per cold CLI call.
 
 ## How It Works
 
@@ -92,6 +92,23 @@ Concrete weight values at different ages:
 
 L1 episodic weight drops by half every 60 days and is nearly zero after a year — old events naturally fade out. L2 semantic weight stays in a narrow band (0.87–0.98) regardless of age, so a fact stored a year ago still scores 87% of a freshly stored one. The only way semantic memories lose relevance is through contradiction-based updates, not time.
 
+### Local LLM for Summarization & Extraction
+
+ClickMem can use a local LLM (default: [Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B)) for memory extraction, smart upsert, and maintenance — no cloud API keys needed. On Apple Silicon, it uses [MLX](https://github.com/ml-explore/mlx) for fast inference; on other platforms, it falls back to HuggingFace Transformers.
+
+```bash
+# Configure LLM mode
+export CLICKMEM_LLM_MODE=local    # local | remote | auto (default: auto)
+export CLICKMEM_LOCAL_MODEL=Qwen/Qwen3.5-2B   # default
+export CLICKMEM_LLM_MODEL=gpt-4o-mini          # remote fallback model
+
+# Install local LLM backend (pick one)
+pip install mlx-lm        # macOS Apple Silicon (recommended)
+pip install transformers   # cross-platform (already included via sentence-transformers)
+```
+
+In `auto` mode, ClickMem tries the local model first and falls back to the remote API if unavailable. The local model handles: conversation extraction, episodic compression, pattern promotion, semantic review, and smart upsert deduplication.
+
 ### Self-Maintenance
 
 ClickMem maintains itself automatically:
@@ -124,7 +141,7 @@ pip install -e ".[all]"       # server + LLM support
 5. Imports existing OpenClaw history (if `~/.openclaw/` exists)
 6. Installs the OpenClaw plugin hook
 
-**Resource usage:** ~500 MB RAM for the embedding model, ~200 MB disk for chDB data (grows with memory count).
+**Resource usage:** ~500 MB RAM for the embedding model, ~200 MB disk for chDB data (grows with memory count). With a local LLM loaded (~4 GB for Qwen3.5-2B via MLX), total RAM usage is ~4.5 GB.
 
 ## Usage
 
