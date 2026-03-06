@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "clickmem": {
+      "command": "clickmem-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

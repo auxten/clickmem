@@ -13,22 +13,61 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from memory_core.db import MemoryDB
 from memory_core.models import Memory, RetrievalConfig
 from memory_core.import_openclaw import import_workspace_memories, import_sqlite_chunks
 
-app = typer.Typer(name="memory", help="OpenClaw Memory — three-layer memory management")
+app = typer.Typer(name="memory", help="ClickMem — unified memory center for AI coding agents")
 console = Console()
 
 _DB_PATH = os.environ.get("CLICKMEM_DB_PATH", os.path.expanduser("~/.openclaw/memory/chdb-data"))
 
-# Singleton DB instance to avoid creating multiple chDB sessions
-_db_instance: MemoryDB | None = None
+# ---------------------------------------------------------------------------
+# Global --remote option  (set via env or per-invocation)
+# ---------------------------------------------------------------------------
+
+_remote_url: str | None = None
+_remote_api_key: str | None = None
 
 
-def _get_db() -> MemoryDB:
+@app.callback()
+def _global_options(
+    remote: Optional[str] = typer.Option(
+        None, "--remote", envvar="CLICKMEM_REMOTE",
+        help='Remote server URL (e.g. http://192.168.1.100:9527). Use "auto" for mDNS discovery.',
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", envvar="CLICKMEM_API_KEY",
+        help="API key for remote server authentication.",
+    ),
+):
+    global _remote_url, _remote_api_key
+    _remote_url = remote
+    _remote_api_key = api_key
+
+
+# ---------------------------------------------------------------------------
+# Transport helper — local or remote depending on --remote
+# ---------------------------------------------------------------------------
+
+_transport_instance = None
+
+
+def _get_transport():
+    global _transport_instance
+    if _transport_instance is None:
+        from memory_core.transport import get_transport
+        _transport_instance = get_transport(remote=_remote_url, api_key=_remote_api_key)
+    return _transport_instance
+
+
+# Legacy helpers used by commands that still do local-only work (import/export/uninstall)
+_db_instance: "MemoryDB | None" = None  # type: ignore[name-defined]
+
+
+def _get_db():
     global _db_instance
     if _db_instance is None:
+        from memory_core.db import MemoryDB
         _db_instance = MemoryDB(_DB_PATH)
     return _db_instance
 
@@ -46,6 +85,11 @@ def _get_emb():
         return emb
 
 
+# ---------------------------------------------------------------------------
+# Commands — all routed through Transport (local or remote)
+# ---------------------------------------------------------------------------
+
+
 @app.command()
 def remember(
     content: str = typer.Argument(..., help="Memory content to store"),
@@ -60,81 +104,34 @@ def remember(
         console.print("[red]Error: content cannot be empty[/red]")
         raise typer.Exit(code=1)
 
-    db = _get_db()
-    emb = _get_emb()
-
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
-
-    if layer == "working":
-        mid = db.set_working(content)
-        if json_output:
-            typer.echo(json.dumps({"id": mid, "layer": "working", "status": "stored"}))
-        else:
-            console.print(f"[green]✓[/green] Working memory updated.")
-        return
-
-    if no_upsert or layer == "episodic":
-        # Direct insert (current behavior)
-        m = Memory(
-            content=content,
-            layer=layer,
-            category=category,
-            tags=tag_list,
-            embedding=emb.encode_document(content),
-            source="cli",
-        )
-        db.insert(m)
-
-        if json_output:
-            typer.echo(json.dumps({
-                "id": m.id,
-                "layer": layer,
-                "category": category,
-                "status": "stored",
-            }))
-        else:
-            console.print(
-                f"[green]✓[/green] Stored [{layer}/{category}]: {content}\n"
-                f"  id={m.id[:8]}  tags={','.join(tag_list)}"
-            )
-        return
-
-    # Smart upsert for semantic (and other non-episodic, non-working) layers
-    from memory_core.upsert import upsert
-    from memory_core.llm import get_llm_complete
-    llm = get_llm_complete()
-    result = upsert(db, emb, content, layer, category, tag_list, llm_complete=llm)
+    t = _get_transport()
+    result = t.remember(content=content, layer=layer, category=category,
+                        tags=tag_list, no_upsert=no_upsert)
 
     if json_output:
-        typer.echo(json.dumps({
-            "action": result.action,
-            "id": result.added_id,
-            "layer": layer,
-            "category": category,
-            "status": "stored",
-            "updated": result.updated,
-            "deleted": result.deleted,
-        }))
+        typer.echo(json.dumps(result, default=str))
     else:
-        if result.action in ("ADD", "FALLBACK_ADD"):
+        action = result.get("action", "ADD")
+        if action in ("ADD", "FALLBACK_ADD"):
             console.print(
                 f"[green]✓[/green] Stored [{layer}/{category}]: {content}\n"
-                f"  id={result.added_id[:8] if result.added_id else '?'}  tags={','.join(tag_list)}"
+                f"  id={str(result.get('id', '?'))[:8]}  tags={','.join(tag_list)}"
             )
-        elif result.action == "UPSERT":
+        elif action == "UPSERT":
             console.print(f"[green]✓[/green] Upserted [{layer}/{category}]: {content}")
-            if result.added_id:
-                console.print(f"  Added: {result.added_id[:8]}")
-            for u in result.updated:
+            if result.get("id"):
+                console.print(f"  Added: {result['id'][:8]}")
+            for u in result.get("updated", []):
                 console.print(f"  Updated: {u['id'][:8]} → {u['new_content'][:60]}")
-            for d in result.deleted:
+            for d in result.get("deleted", []):
                 console.print(f"  Deleted: {d[:8]}")
-        elif result.action == "MERGED":
+        elif action == "MERGED":
             console.print(f"[green]✓[/green] Merged into existing memory")
-            for u in result.updated:
+            for u in result.get("updated", []):
                 console.print(f"  Updated: {u['id'][:8]} → {u['new_content'][:60]}")
         else:
-            console.print(f"[green]✓[/green] No changes needed (existing memory sufficient)")
+            console.print(f"[green]✓[/green] {result.get('status', 'stored')}")
 
 
 @app.command()
@@ -144,41 +141,13 @@ def extract(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Extract structured memories from conversation text using LLM."""
-    db = _get_db()
-    emb = _get_emb()
-
-    from memory_core.llm import get_llm_complete
-    llm_complete = get_llm_complete()
-
-    if llm_complete is None:
-        # No LLM available — fall back to raw episodic store
-        m = Memory(
-            content=text,
-            layer="episodic",
-            category="event",
-            embedding=emb.encode_document(text),
-            session_id=session_id,
-            source="agent",
-        )
-        db.insert(m)
-        if json_output:
-            typer.echo(json.dumps([m.id]))
-        else:
-            console.print(f"[yellow]⚠[/yellow] No LLM available — stored raw episodic: {m.id[:8]}")
-        return
-
-    from memory_core.extractor import MemoryExtractor
-    extractor = MemoryExtractor(db, emb)
-    ids = extractor.extract(
-        [{"role": "user", "content": text}],
-        llm_complete,
-        session_id=session_id,
-    )
+    t = _get_transport()
+    ids = t.extract(text=text, session_id=session_id)
 
     if json_output:
         typer.echo(json.dumps(ids))
     else:
-        console.print(f"[green]✓[/green] Extracted {len(ids)} memories: {', '.join(i[:8] for i in ids)}")
+        console.print(f"[green]✓[/green] Extracted {len(ids)} memories: {', '.join(str(i)[:8] for i in ids)}")
 
 
 @app.command()
@@ -191,21 +160,9 @@ def recall(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Semantic search for memories."""
-    db = _get_db()
-    emb = _get_emb()
-
-    from memory_core.retrieval import hybrid_search
+    t = _get_transport()
     cfg = RetrievalConfig(layer=layer, category=category, top_k=top_k)
-    results = hybrid_search(db, emb, query, cfg=cfg)
-    if min_score > 0:
-        results = [r for r in results if r.get("final_score", 0) >= min_score]
-
-    # Bump access_count for returned results
-    for r in results:
-        try:
-            db.touch(r["id"])
-        except Exception:
-            pass
+    results = t.recall(query, cfg=cfg, min_score=min_score)
 
     if json_output:
         typer.echo(json.dumps(results, default=str))
@@ -215,7 +172,6 @@ def recall(
         console.print("No matching memories found.")
         return
 
-    # Group by layer
     by_layer: dict[str, list] = {}
     for r in results:
         by_layer.setdefault(r["layer"], []).append(r)
@@ -237,51 +193,21 @@ def forget(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Delete a memory by ID, prefix, or content search."""
-    db = _get_db()
-    m = None
+    t = _get_transport()
+    result = t.forget(memory_id)
 
-    looks_like_uuid = bool(_UUID_PATTERN.match(memory_id))
-
-    if looks_like_uuid:
-        # 1. Try exact UUID match
-        m = db.get(memory_id)
-        if m is None:
-            # 2. Try prefix match
-            rows = db.query(
-                f"SELECT id FROM memories "
-                f"WHERE startsWith(id, '{db._escape(memory_id)}') AND is_active = 1 LIMIT 1"
-            )
-            if rows:
-                memory_id = rows[0]["id"]
-                m = db.get(memory_id)
-
-    if m is None:
-        # 3. Content search fallback
-        emb = _get_emb()
-        from memory_core.retrieval import hybrid_search
-        cfg = RetrievalConfig(top_k=1, layer="semantic")
-        results = hybrid_search(db, emb, memory_id, cfg=cfg)
-        if results and results[0].get("final_score", 0) > 0.3:
-            found_id = results[0]["id"]
-            m = db.get(found_id)
-            if m:
-                memory_id = found_id
-
-    if m is None:
+    if "error" in result:
         if json_output:
-            typer.echo(json.dumps({"error": "not found", "query": memory_id}))
+            typer.echo(json.dumps(result))
         else:
             console.print(f"[red]Error: Memory not found: {memory_id}[/red]")
         raise typer.Exit(code=1)
 
-    db.deactivate(memory_id)
-
     if json_output:
-        typer.echo(json.dumps({"id": memory_id, "content": m.content, "status": "deleted"}))
+        typer.echo(json.dumps(result, default=str))
     else:
         console.print(
-            f"[green]✓[/green] Forgotten: {memory_id[:8]} "
-            f"[{m.layer}/{m.category}] {m.content}"
+            f"[green]✓[/green] Forgotten: {result['id'][:8]} {result.get('content', '')}"
         )
 
 
@@ -291,18 +217,18 @@ def review(
     limit: int = typer.Option(100, help="Max entries to show"),
 ):
     """Browse memories by layer."""
-    db = _get_db()
+    t = _get_transport()
+    data = t.review(layer=layer, limit=limit)
 
     if layer == "working":
-        content = db.get_working()
-        if content:
+        if data:
             console.print("\n[Working Memory]")
-            console.print(content)
+            console.print(str(data))
         else:
             console.print("No working memory set.")
         return
 
-    memories = db.list_by_layer(layer, limit=limit)
+    memories = data if isinstance(data, list) else []
     if not memories:
         console.print(f"No {layer} memories found.")
         return
@@ -314,10 +240,17 @@ def review(
     table.add_column("Date", width=16)
 
     for m in memories:
-        date_str = ""
-        if m.created_at:
-            date_str = m.created_at.strftime("%Y-%m-%d %H:%M")
-        table.add_row(m.id[:8], m.category, m.content[:60], date_str)
+        if hasattr(m, "content"):
+            date_str = m.created_at.strftime("%Y-%m-%d %H:%M") if m.created_at else ""
+            table.add_row(m.id[:8], m.category, m.content[:60], date_str)
+        elif isinstance(m, dict):
+            date_str = str(m.get("created_at", ""))[:16]
+            table.add_row(
+                str(m.get("id", ""))[:8],
+                m.get("category", ""),
+                str(m.get("content", ""))[:60],
+                date_str,
+            )
 
     console.print(table)
 
@@ -327,17 +260,13 @@ def status(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show per-layer statistics."""
-    db = _get_db()
-    counts = db.count_by_layer()
-    total = db.count()
-    stats_data = db.stats()
+    t = _get_transport()
+    data = t.status()
+    counts = data.get("counts", {})
+    total = data.get("total", 0)
 
     if json_output:
-        typer.echo(json.dumps({
-            "counts": counts,
-            "total": total,
-            "breakdown": stats_data,
-        }))
+        typer.echo(json.dumps(data))
         return
 
     console.print(f"\nL0 Working    {counts.get('working', 0):>4} entries")
@@ -353,9 +282,9 @@ def sql(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Execute a raw SQL query."""
-    db = _get_db()
+    t = _get_transport()
     try:
-        results = db.query(query)
+        results = t.sql(query)
     except Exception as e:
         if json_output:
             typer.echo(json.dumps({"error": str(e)}))
@@ -385,48 +314,113 @@ def maintain(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Run maintenance tasks."""
-    db = _get_db()
-
-    if dry_run:
-        stale = db.find_stale_episodic()
-        deleted = db.find_deleted()
-        tag_freqs = db.get_tag_frequencies()
-
-        result = {
-            "dry_run": True,
-            "would_clean_stale": len(stale),
-            "would_purge_deleted": len(deleted),
-            "promotion_candidates": dict(tag_freqs),
-        }
-
-        if json_output:
-            typer.echo(json.dumps(result))
-        else:
-            console.print(f"Dry run:")
-            console.print(f"  Would clean {len(stale)} stale L1 entries")
-            console.print(f"  Would purge {len(deleted)} soft-deleted entries")
-            if tag_freqs:
-                console.print(f"  Promotion candidates: {dict(tag_freqs)}")
-        return
-
-    from memory_core.maintenance_mod import maintenance as maint
-    emb = _get_emb()
-
-    def _mock_llm(prompt: str) -> str:
-        from tests.helpers.mock_llm import MockLLMComplete
-        return MockLLMComplete()(prompt)
-
-    result = maint.run_all(db, llm_complete=_mock_llm, emb=emb)
+    t = _get_transport()
+    result = t.maintain(dry_run=dry_run)
 
     if json_output:
         typer.echo(json.dumps(result))
     else:
-        console.print(f"[green]✓[/green] Maintenance complete:")
-        console.print(f"  Stale cleaned: {result['stale_cleaned']}")
-        console.print(f"  Deleted purged: {result['deleted_purged']}")
-        console.print(f"  Compressed: {result['compressed']}")
-        console.print(f"  Promoted: {result['promoted']}")
-        console.print(f"  Reviewed: {result['reviewed']}")
+        if dry_run:
+            console.print("Dry run:")
+            console.print(f"  Would clean {result.get('would_clean_stale', 0)} stale L1 entries")
+            console.print(f"  Would purge {result.get('would_purge_deleted', 0)} soft-deleted entries")
+            promo = result.get("promotion_candidates", {})
+            if promo:
+                console.print(f"  Promotion candidates: {promo}")
+        else:
+            console.print(f"[green]✓[/green] Maintenance complete:")
+            console.print(f"  Stale cleaned: {result.get('stale_cleaned', 0)}")
+            console.print(f"  Deleted purged: {result.get('deleted_purged', 0)}")
+            console.print(f"  Compressed: {result.get('compressed', 0)}")
+            console.print(f"  Promoted: {result.get('promoted', 0)}")
+            console.print(f"  Reviewed: {result.get('reviewed', 0)}")
+
+
+# ---------------------------------------------------------------------------
+# Server commands
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind address (use 0.0.0.0 for LAN)"),
+    port: int = typer.Option(9527, "--port", "-p", help="HTTP port"),
+    debug: bool = typer.Option(False, "--debug", help="Enable /v1/sql endpoint"),
+    no_mdns: bool = typer.Option(False, "--no-mdns", help="Disable mDNS registration"),
+    api_key_gen: bool = typer.Option(False, "--gen-key", help="Generate and print a new API key"),
+):
+    """Start the ClickMem REST API server for LAN sharing."""
+    if api_key_gen:
+        from memory_core.auth import generate_api_key
+        key = generate_api_key()
+        console.print(f"Generated API key: [bold]{key}[/bold]")
+        console.print(f"Set it: export CLICKMEM_API_KEY={key}")
+        return
+
+    console.print(f"Starting ClickMem server on {host}:{port}")
+    if debug:
+        console.print("[yellow]⚠ Debug mode: /v1/sql endpoint is enabled[/yellow]")
+    if os.environ.get("CLICKMEM_API_KEY"):
+        console.print("[green]✓[/green] API key authentication enabled")
+    else:
+        console.print("[yellow]⚠ No API key set — server is open (set CLICKMEM_API_KEY to secure)[/yellow]")
+
+    from memory_core.server import run_server
+    run_server(host=host, port=port, debug=debug, register_mdns=not no_mdns)
+
+
+@app.command()
+def mcp(
+    transport: str = typer.Option("stdio", help="Transport mode: stdio or sse"),
+    host: str = typer.Option("0.0.0.0", "--host", "-H", help="SSE bind address"),
+    port: int = typer.Option(9528, "--port", "-p", help="SSE port"),
+):
+    """Start the ClickMem MCP server (for Claude Code / Cursor integration)."""
+    if transport == "stdio":
+        from memory_core.mcp_server import main_stdio
+        main_stdio()
+    elif transport == "sse":
+        console.print(f"Starting ClickMem MCP SSE server on {host}:{port}")
+        from memory_core.mcp_server import main_sse
+        main_sse(host=host, port=port)
+    else:
+        console.print(f"[red]Unknown transport: {transport}. Use 'stdio' or 'sse'.[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="discover")
+def discover_cmd(
+    timeout: float = typer.Option(3.0, help="Discovery timeout in seconds"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Discover ClickMem servers on the local network via mDNS."""
+    try:
+        from memory_core.discovery import discover
+    except ImportError:
+        console.print("[red]Error: zeroconf not installed. Run: pip install clickmem[server][/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"Scanning for ClickMem servers ({timeout}s)...")
+    servers = discover(timeout=timeout)
+
+    if json_output:
+        typer.echo(json.dumps(servers))
+        return
+
+    if not servers:
+        console.print("No ClickMem servers found on LAN.")
+        return
+
+    for s in servers:
+        ver = s.get("properties", {}).get("version", "?")
+        api = s.get("properties", {}).get("api", "?")
+        console.print(f"  [green]✓[/green] {s['host']}:{s['port']}  v{ver}  ({api})")
+    console.print(f"\nTo connect: memory recall 'query' --remote http://{servers[0]['host']}:{servers[0]['port']}")
+
+
+# ---------------------------------------------------------------------------
+# Legacy local-only commands (import / export / uninstall)
+# ---------------------------------------------------------------------------
 
 
 @app.command(name="import-openclaw")
@@ -500,10 +494,7 @@ def export_context(
     memory_md = md_sync.export_memory_md(db, workspace_path, **limits)
     daily_md = md_sync.export_daily_md(db, workspace_path, **limits)
 
-    result = {
-        "memory_md": memory_md,
-        "daily_md": daily_md,
-    }
+    result = {"memory_md": memory_md, "daily_md": daily_md}
 
     if json_output:
         typer.echo(json.dumps(result))
@@ -531,10 +522,8 @@ def uninstall(
     openclaw_dir = os.path.expanduser(openclaw_dir)
     result: dict = {"exported_workspaces": [], "hook_removed": False, "data_removed": False}
 
-    # ── 1. Export back to OpenClaw workspace .md files ────────────────
     if export_back:
         db = _get_db()
-        # Find all existing workspace dirs and export into each
         if os.path.isdir(openclaw_dir):
             import glob
             workspace_dirs = sorted(glob.glob(os.path.join(openclaw_dir, "workspace-*")))
@@ -552,7 +541,6 @@ def uninstall(
                 n = len(result["exported_workspaces"])
                 console.print(f"[green]✓[/green] Exported memories to {n} workspace(s)")
 
-    # ── 2. Confirm before destructive actions ─────────────────────────
     if not yes and not json_output:
         console.print("\nThis will:")
         console.print("  - Remove clickmem chDB data (~/.openclaw/memory/chdb-data/)")
@@ -562,20 +550,16 @@ def uninstall(
             console.print("Aborted.")
             raise typer.Exit(code=0)
 
-    # ── 3. Remove OpenClaw hook from config ──────────────────────────
     openclaw_config = os.path.expanduser("~/.openclaw/openclaw.json")
     if os.path.isfile(openclaw_config):
         try:
             with open(openclaw_config) as f:
                 cfg = json.load(f)
             hooks = cfg.get("hooks", {}).get("internal", {})
-            # Remove from extraDirs
             extra = hooks.get("load", {}).get("extraDirs", [])
-            # Find and remove any path containing "clickmem"
             new_extra = [d for d in extra if "clickmem" not in d]
             if len(new_extra) != len(extra):
                 hooks.get("load", {})["extraDirs"] = new_extra
-            # Remove from entries
             entries = hooks.get("entries", {})
             entries.pop("clickmem-hook", None)
             with open(openclaw_config, "w") as f:
@@ -584,7 +568,6 @@ def uninstall(
         except Exception:
             pass
 
-    # ── 4. Remove chDB data directory ─────────────────────────────────
     chdb_data = os.path.expanduser("~/.openclaw/memory/chdb-data")
     if os.path.isdir(chdb_data):
         shutil.rmtree(chdb_data)
