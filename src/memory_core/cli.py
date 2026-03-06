@@ -366,10 +366,11 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind address (use 0.0.0.0 for LAN)"),
     port: int = typer.Option(9527, "--port", "-p", help="HTTP port"),
     debug: bool = typer.Option(False, "--debug", help="Enable /v1/sql endpoint"),
+    no_mcp: bool = typer.Option(False, "--no-mcp", help="Disable MCP SSE on /sse (REST-only)"),
     no_mdns: bool = typer.Option(False, "--no-mdns", help="Disable mDNS registration"),
     api_key_gen: bool = typer.Option(False, "--gen-key", help="Generate and print a new API key"),
 ):
-    """Start the ClickMem REST API server for LAN sharing."""
+    """Start the ClickMem server (REST API + MCP SSE on a single port)."""
     if api_key_gen:
         from memory_core.auth import generate_api_key
         key = generate_api_key()
@@ -377,7 +378,11 @@ def serve(
         console.print(f"Set it: export CLICKMEM_API_KEY={key}")
         return
 
+    enable_mcp = not no_mcp
     console.print(f"Starting ClickMem server on {host}:{port}")
+    if enable_mcp:
+        console.print(f"  REST API: http://{host}:{port}/v1/...")
+        console.print(f"  MCP SSE:  http://{host}:{port}/sse")
     if debug:
         console.print("[yellow]⚠ Debug mode: /v1/sql endpoint is enabled[/yellow]")
     if os.environ.get("CLICKMEM_API_KEY"):
@@ -386,25 +391,22 @@ def serve(
         console.print("[yellow]⚠ No API key set — server is open (set CLICKMEM_API_KEY to secure)[/yellow]")
 
     from memory_core.server import run_server
-    run_server(host=host, port=port, debug=debug, register_mdns=not no_mdns)
+    run_server(host=host, port=port, debug=debug, register_mdns=not no_mdns, mcp=enable_mcp)
 
 
 @app.command()
 def mcp(
-    transport: str = typer.Option("stdio", help="Transport mode: stdio or sse"),
-    host: str = typer.Option("0.0.0.0", "--host", "-H", help="SSE bind address"),
-    port: int = typer.Option(9528, "--port", "-p", help="SSE port"),
+    transport: str = typer.Option("stdio", help="Transport mode: stdio"),
 ):
-    """Start the ClickMem MCP server (for Claude Code / Cursor integration)."""
+    """Start the ClickMem MCP server over stdio (for Claude Code / Cursor)."""
     if transport == "stdio":
         from memory_core.mcp_server import main_stdio
         main_stdio()
-    elif transport == "sse":
-        console.print(f"Starting ClickMem MCP SSE server on {host}:{port}")
-        from memory_core.mcp_server import main_sse
-        main_sse(host=host, port=port)
     else:
-        console.print(f"[red]Unknown transport: {transport}. Use 'stdio' or 'sse'.[/red]")
+        console.print(
+            f"[red]Unknown transport: {transport}.[/red]\n"
+            "Use 'stdio' for local MCP, or 'memory serve' for LAN (REST + MCP SSE on one port)."
+        )
         raise typer.Exit(code=1)
 
 

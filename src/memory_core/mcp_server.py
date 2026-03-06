@@ -2,7 +2,7 @@
 
 Supports two transport modes:
 - stdio: for same-machine Claude Code / Cursor (best latency)
-- sse: for LAN remote access (HTTP Server-Sent Events)
+- sse: integrated into the REST server via ``memory serve`` (single port)
 """
 
 from __future__ import annotations
@@ -24,6 +24,12 @@ from memory_core.transport import get_transport
 
 server = Server("clickmem")
 _transport = None
+
+
+def set_transport(t):
+    """Inject a shared transport (used by the combined REST+MCP server)."""
+    global _transport
+    _transport = t
 
 
 def _get_transport():
@@ -232,43 +238,6 @@ async def run_stdio():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-async def run_sse(host: str = "0.0.0.0", port: int = 9528):
-    """Run MCP server over SSE (for LAN remote Cursor / Claude Code)."""
-    from mcp.server.sse import SseServerTransport
-
-    sse_transport = SseServerTransport("/messages/")
-    init_options = server.create_initialization_options()
-
-    async def handle_sse(scope, receive, send):
-        async with sse_transport.connect_sse(scope, receive, send) as streams:
-            await server.run(streams[0], streams[1], init_options)
-
-    async def app(scope, receive, send):
-        if scope["type"] == "lifespan":
-            while True:
-                msg = await receive()
-                if msg["type"] == "lifespan.startup":
-                    await send({"type": "lifespan.startup.complete"})
-                elif msg["type"] == "lifespan.shutdown":
-                    await send({"type": "lifespan.shutdown.complete"})
-                    return
-        path = scope.get("path", "")
-        if path.startswith("/messages"):
-            await sse_transport.handle_post_message(scope, receive, send)
-        else:
-            await handle_sse(scope, receive, send)
-
-    import uvicorn
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
-    srv = uvicorn.Server(config)
-    await srv.serve()
-
-
 def main_stdio():
-    """Synchronous entry point for stdio mode."""
+    """Synchronous entry point for stdio mode (``clickmem-mcp`` console script)."""
     asyncio.run(run_stdio())
-
-
-def main_sse(host: str = "0.0.0.0", port: int = 9528):
-    """Synchronous entry point for SSE mode."""
-    asyncio.run(run_sse(host=host, port=port))

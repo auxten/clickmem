@@ -207,11 +207,52 @@ async def sql(req: SqlRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _build_combined_app():
+    """Build a combined ASGI app: FastAPI REST + MCP SSE on the same port.
+
+    Routes:
+      /sse         → MCP SSE connection (GET)
+      /messages/   → MCP message posting (POST)
+      /*           → FastAPI REST API
+    """
+    from mcp.server.sse import SseServerTransport
+    from memory_core.mcp_server import server as mcp_server, set_transport
+
+    sse_transport = SseServerTransport("/messages/")
+    init_options = mcp_server.create_initialization_options()
+    set_transport(_get_transport())
+
+    rest_app = app
+
+    async def combined(scope, receive, send):
+        if scope["type"] == "lifespan":
+            await rest_app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path == "/sse":
+            async with sse_transport.connect_sse(scope, receive, send) as streams:
+                await mcp_server.run(streams[0], streams[1], init_options)
+        elif path.startswith("/messages"):
+            await sse_transport.handle_post_message(scope, receive, send)
+        else:
+            await rest_app(scope, receive, send)
+
+    return combined
+
+
 def run_server(host: str = "127.0.0.1", port: int = 9527, debug: bool = False,
-               register_mdns: bool = True):
-    """Start the ClickMem server (blocking)."""
+               register_mdns: bool = True, mcp: bool = True):
+    """Start the ClickMem server (blocking).
+
+    When *mcp* is True (default), MCP SSE is served on the same port at
+    ``/sse`` and ``/messages/``, so a single process handles both
+    the REST API and MCP clients.
+    """
     import uvicorn
     set_debug_mode(debug)
+
+    asgi_app = _build_combined_app() if mcp else app
 
     mdns_cleanup = None
     if register_mdns and host in ("0.0.0.0", "::"):
@@ -224,7 +265,7 @@ def run_server(host: str = "127.0.0.1", port: int = 9527, debug: bool = False,
             print(f"mDNS registration skipped: {e}")
 
     try:
-        uvicorn.run(app, host=host, port=port, log_level="info")
+        uvicorn.run(asgi_app, host=host, port=port, log_level="info")
     finally:
         if mdns_cleanup:
             mdns_cleanup()
