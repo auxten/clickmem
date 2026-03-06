@@ -287,6 +287,55 @@ class TestParseLLMResponse:
         assert _parse_llm_response("") is None
 
 
+class TestContextStripping:
+    """P2: <clickmem-context> blocks should be stripped before episodic storage."""
+
+    def test_strip_removes_context_block(self):
+        from memory_core.upsert import _strip_injected_context
+        raw = (
+            "<clickmem-context>\n"
+            "Background context from long-term memory.\n"
+            "- [semantic/person] Claire = Tong\n"
+            "</clickmem-context>\n"
+            "user: what is the bug?\n"
+            "assistant: The bug is in the parser."
+        )
+        cleaned = _strip_injected_context(raw)
+        assert "<clickmem-context>" not in cleaned
+        assert "user: what is the bug?" in cleaned
+        assert "The bug is in the parser" in cleaned
+
+    def test_strip_preserves_content_without_context(self):
+        from memory_core.upsert import _strip_injected_context
+        raw = "User discussed architecture with Alice"
+        assert _strip_injected_context(raw) == raw
+
+    def test_strip_empty_after_removal(self):
+        from memory_core.upsert import _strip_injected_context
+        raw = "<clickmem-context>Only context, nothing else</clickmem-context>"
+        assert _strip_injected_context(raw) == ""
+
+    def test_episodic_upsert_strips_context(self, db, mock_emb):
+        """upsert with episodic layer should store content with context blocks removed."""
+        raw = (
+            "<clickmem-context>memory injection</clickmem-context>\n"
+            "user: discussed deployment\n"
+            "assistant: done"
+        )
+        result = upsert(db, mock_emb, raw, "episodic", "event", [])
+        assert result.action == "ADD"
+        stored = db.get(result.added_id)
+        assert "<clickmem-context>" not in stored.content
+        assert "discussed deployment" in stored.content
+
+    def test_episodic_upsert_noop_if_only_context(self, db, mock_emb):
+        """If stripping context leaves nothing, upsert returns NOOP."""
+        raw = "<clickmem-context>Only context block here</clickmem-context>"
+        result = upsert(db, mock_emb, raw, "episodic", "event", [])
+        assert result.action == "NOOP"
+        assert result.added_id is None
+
+
 class TestUpsertResult:
     """Test UpsertResult dataclass."""
 

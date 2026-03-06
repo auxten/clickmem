@@ -396,13 +396,80 @@ class TestCountAndStats:
         assert isinstance(s, dict)
 
 
+class TestSearchByVector:
+    """P3: SQL-level cosineDistance pre-filter for candidate retrieval."""
+
+    def test_returns_memories_ordered_by_similarity(self, db, mock_emb):
+        """search_by_vector returns memories closest to the query vector."""
+        contents = ["alpha beta gamma", "delta epsilon zeta", "alpha beta delta"]
+        for c in contents:
+            m = Memory(
+                content=c, layer="episodic", category="event",
+                embedding=mock_emb.encode_document(c), source="cli",
+            )
+            db.insert(m)
+
+        query_vec = mock_emb.encode_query("alpha beta gamma")
+        results = db.search_by_vector(query_vec, "episodic", limit=3)
+        assert len(results) == 3
+        assert all(hasattr(r, "content") for r in results)
+
+    def test_respects_layer_filter(self, db, mock_emb):
+        """search_by_vector only returns memories from the requested layer."""
+        ep = Memory(
+            content="episodic memory", layer="episodic", category="event",
+            embedding=mock_emb.encode_document("episodic memory"), source="cli",
+        )
+        sem = Memory(
+            content="semantic memory", layer="semantic", category="knowledge",
+            embedding=mock_emb.encode_document("semantic memory"), source="cli",
+        )
+        db.insert(ep)
+        db.insert(sem)
+
+        query_vec = mock_emb.encode_query("memory")
+        results = db.search_by_vector(query_vec, "semantic", limit=10)
+        assert all(r.layer == "semantic" for r in results)
+        assert len(results) == 1
+
+    def test_respects_limit(self, db, mock_emb):
+        """search_by_vector respects the limit parameter."""
+        for i in range(10):
+            m = Memory(
+                content=f"memory number {i}", layer="episodic", category="event",
+                embedding=mock_emb.encode_document(f"memory number {i}"), source="cli",
+            )
+            db.insert(m)
+
+        query_vec = mock_emb.encode_query("memory")
+        results = db.search_by_vector(query_vec, "episodic", limit=3)
+        assert len(results) == 3
+
+    def test_skips_empty_embeddings(self, db, mock_emb):
+        """Memories with empty embeddings are excluded."""
+        with_emb = Memory(
+            content="has embedding", layer="episodic", category="event",
+            embedding=mock_emb.encode_document("has embedding"), source="cli",
+        )
+        without_emb = Memory(
+            content="no embedding", layer="episodic", category="event",
+            embedding=[], source="cli",
+        )
+        db.insert(with_emb)
+        db.insert(without_emb)
+
+        query_vec = mock_emb.encode_query("embedding")
+        results = db.search_by_vector(query_vec, "episodic", limit=10)
+        assert all(len(r.embedding) > 0 for r in results)
+
+
 class TestRawQuery:
     """Test raw SQL query execution."""
 
     def test_select_count(self, populated_db):
         """query can execute a simple COUNT query."""
         results = populated_db.query(
-            "SELECT count() as cnt FROM memories WHERE is_active=1"
+            "SELECT count() as cnt FROM memories FINAL WHERE is_active=1"
         )
         assert len(results) == 1
         assert results[0]["cnt"] == 11
@@ -410,6 +477,6 @@ class TestRawQuery:
     def test_select_by_layer(self, populated_db):
         """query can filter by layer."""
         results = populated_db.query(
-            "SELECT content FROM memories WHERE layer='semantic' AND is_active=1"
+            "SELECT content FROM memories FINAL WHERE layer='semantic' AND is_active=1"
         )
         assert len(results) == 5

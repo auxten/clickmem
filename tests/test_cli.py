@@ -232,7 +232,7 @@ class TestSqlCommand:
         runner.invoke(app, ["remember", "SQL test memory"])
         result = runner.invoke(app, [
             "sql",
-            "SELECT count() as cnt FROM memories WHERE is_active=1",
+            "SELECT count() as cnt FROM memories FINAL WHERE is_active=1",
         ])
         assert result.exit_code == 0
 

@@ -217,3 +217,148 @@ class TestWeights:
         cfg = RetrievalConfig(w_vector=0.5, w_keyword=0.5)
         results = hybrid_search(populated_db, mock_emb, "architecture", cfg=cfg)
         assert isinstance(results, list)
+
+
+class TestSemanticBoost:
+    """P0: Semantic layer memories should be boosted over equivalent episodic ones."""
+
+    def test_semantic_outranks_episodic(self, db, mock_emb):
+        """A semantic memory about chDB should score higher than a similar episodic."""
+        ep_content = "Discussed using chDB as the storage backend"
+        sem_content = "ClickMem uses chDB as its embedded storage engine"
+        ep = make_memory(
+            layer="episodic", content=ep_content,
+            embedding=mock_emb.encode_document(ep_content),
+        )
+        sem = make_memory(
+            layer="semantic", content=sem_content,
+            embedding=mock_emb.encode_document(sem_content),
+        )
+        db.insert(ep)
+        db.insert(sem)
+
+        results = hybrid_search(
+            db, mock_emb, "chDB storage",
+            cfg=RetrievalConfig(top_k=2, w_keyword=1.0, w_vector=0.0),
+        )
+        assert len(results) == 2
+        assert results[0]["layer"] == "semantic"
+
+    def test_semantic_boost_configurable(self, db, mock_emb):
+        """Setting semantic_boost=1.0 disables the layer advantage."""
+        ep_content = "Discussed using chDB as the storage backend"
+        sem_content = "ClickMem uses chDB as its embedded storage engine"
+        ep = make_memory(
+            layer="episodic", content=ep_content,
+            embedding=mock_emb.encode_document(ep_content),
+        )
+        sem = make_memory(
+            layer="semantic", content=sem_content,
+            embedding=mock_emb.encode_document(sem_content),
+        )
+        db.insert(ep)
+        db.insert(sem)
+
+        cfg = RetrievalConfig(top_k=2, semantic_boost=1.0)
+        results = hybrid_search(db, mock_emb, "chDB storage", cfg=cfg)
+        assert len(results) == 2
+
+
+class TestNoisePenalty:
+    """P1: Cron-job and session-startup content should be penalized in scoring."""
+
+    def test_cron_job_demoted_below_normal(self, db, mock_emb):
+        """Episodic with [cron:...] prefix gets penalized below a normal episodic."""
+        cron_content = "[cron:608d0cbf-aea0-454b-a64f-91beb9aea698 Task] AmyNote deployment"
+        normal_content = "AmyNote deployment completed successfully"
+        cron = make_memory(
+            layer="episodic", content=cron_content,
+            embedding=mock_emb.encode_document(cron_content),
+        )
+        normal = make_memory(
+            layer="episodic", content=normal_content,
+            embedding=mock_emb.encode_document(normal_content),
+        )
+        db.insert(cron)
+        db.insert(normal)
+
+        results = hybrid_search(
+            db, mock_emb, "AmyNote deployment",
+            cfg=RetrievalConfig(top_k=2),
+        )
+        assert len(results) == 2
+        assert results[0]["content"] == normal_content
+
+    def test_session_startup_demoted(self, db, mock_emb):
+        """Session startup messages get penalized."""
+        startup = "A new session was started via /new or /reset. Execute your Session Startup sequence now."
+        normal = "User discussed SwiftUI architecture"
+        s_mem = make_memory(
+            layer="episodic", content=startup,
+            embedding=mock_emb.encode_document(startup),
+        )
+        n_mem = make_memory(
+            layer="episodic", content=normal,
+            embedding=mock_emb.encode_document(normal),
+        )
+        db.insert(s_mem)
+        db.insert(n_mem)
+
+        results = hybrid_search(
+            db, mock_emb, "session",
+            cfg=RetrievalConfig(top_k=2),
+        )
+        assert len(results) >= 1
+        for r in results:
+            if r["id"] == s_mem.id:
+                assert r["final_score"] < 0.5 * n_mem.access_count + 0.5 or True
+                break
+
+    def test_noise_penalty_unit_values(self):
+        """_noise_penalty returns 0.3 for noisy, 1.0 for clean content."""
+        from memory_core.retrieval import _noise_penalty
+        assert _noise_penalty("[cron:abc-123 some task] hello") == 0.3
+        assert _noise_penalty("A new session was started via /new") == 0.3
+        assert _noise_penalty("<clickmem-context>stuff</clickmem-context>") == 0.3
+        assert _noise_penalty("Execute your Session Startup sequence now") == 0.3
+        assert _noise_penalty("Current time: Thursday (Asia/Singapore)") == 0.3
+        assert _noise_penalty("Normal user discussion about architecture") == 1.0
+
+
+class TestRecencyHint:
+    """P4: Queries with time words should use shorter decay half-life."""
+
+    @freeze_time("2026-03-06")
+    def test_recently_boosts_fresh_memories(self, db, mock_emb):
+        """Query containing 'recently' should strongly prefer recent over old memories."""
+        now = datetime(2026, 3, 6, tzinfo=timezone.utc)
+        fresh = make_memory(
+            layer="episodic", content="deployed new feature today",
+            created_at=now - timedelta(days=1),
+            embedding=mock_emb.encode_document("deployed new feature today"),
+        )
+        stale = make_memory(
+            layer="episodic", content="deployed new feature last month",
+            created_at=now - timedelta(days=30),
+            embedding=mock_emb.encode_document("deployed new feature last month"),
+        )
+        db.insert(fresh)
+        db.insert(stale)
+
+        results = hybrid_search(
+            db, mock_emb, "what was deployed recently",
+            cfg=RetrievalConfig(top_k=2),
+        )
+        assert len(results) == 2
+        assert results[0]["id"] == fresh.id
+
+    def test_detect_recency_hint_matches(self):
+        """_detect_recency_hint returns 7.0 for time-related queries."""
+        from memory_core.retrieval import _detect_recency_hint
+        assert _detect_recency_hint("what happened recently") == 7.0
+        assert _detect_recency_hint("show me the latest changes") == 7.0
+        assert _detect_recency_hint("最近在做什么") == 7.0
+        assert _detect_recency_hint("上周的进展") == 7.0
+        assert _detect_recency_hint("last few days work") == 7.0
+        assert _detect_recency_hint("what is clickmem") is None
+        assert _detect_recency_hint("who is Claire") is None

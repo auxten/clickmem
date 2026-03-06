@@ -16,6 +16,7 @@ try:
         list_tools,
         list_resources,
         read_resource,
+        set_transport,
         _get_transport,
     )
     import memory_core.mcp_server as mcp_mod

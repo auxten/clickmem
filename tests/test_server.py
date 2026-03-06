@@ -305,3 +305,39 @@ class TestRequestValidation:
     def test_recall_min_score_out_of_range(self, client):
         resp = client.post("/v1/recall", json={"query": "test", "min_score": 5.0})
         assert resp.status_code == 422
+
+
+class TestCombinedApp:
+    """Test that the combined REST + MCP SSE app serves both on one port."""
+
+    @pytest.fixture
+    def combined_client(self):
+        from memory_core.transport import LocalTransport
+        import memory_core.mcp_server as mcp_mod
+
+        t = LocalTransport(db_path=":memory:")
+        t._get_db()._truncate()
+        server_mod._transport = t
+        mcp_mod._transport = None
+
+        combined = server_mod._build_combined_app()
+        return TestClient(combined)
+
+    def test_rest_health_on_combined(self, combined_client):
+        resp = combined_client.get("/v1/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_rest_remember_on_combined(self, combined_client):
+        resp = combined_client.post("/v1/remember", json={
+            "content": "Combined server test",
+            "layer": "semantic",
+            "no_upsert": True,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "stored"
+
+    def test_mcp_transport_shared(self, combined_client):
+        """MCP and REST share the same transport after _build_combined_app."""
+        import memory_core.mcp_server as mcp_mod
+        assert mcp_mod._transport is server_mod._transport

@@ -106,7 +106,7 @@ class TestLocalTransport:
 
     def test_sql(self, transport):
         transport.remember("SQL test", layer="semantic", no_upsert=True)
-        results = transport.sql("SELECT count() as cnt FROM memories WHERE is_active = 1")
+        results = transport.sql("SELECT count() as cnt FROM memories FINAL WHERE is_active = 1")
         assert len(results) > 0
         assert int(results[0]["cnt"]) >= 1
 
