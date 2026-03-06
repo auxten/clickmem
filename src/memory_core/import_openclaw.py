@@ -142,7 +142,7 @@ def _content_exists(db: "MemoryDB", content: str) -> bool:
     """Check if a memory with the same content already exists."""
     escaped = db._escape(content)
     rows = db.query(
-        f"SELECT count() as cnt FROM memories "
+        f"SELECT count() as cnt FROM memories FINAL "
         f"WHERE content = '{escaped}' AND is_active = 1"
     )
     return bool(rows and int(rows[0]["cnt"]) > 0)

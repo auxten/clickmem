@@ -77,6 +77,8 @@ class maintenance:
         if llm_complete:
             reviewed = maintenance.review_semantic(db, llm_complete)
 
+        db.optimize()
+
         return {
             "stale_cleaned": stale,
             "deleted_purged": purged,
