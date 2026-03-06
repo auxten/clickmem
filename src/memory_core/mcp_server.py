@@ -20,16 +20,16 @@ from mcp.types import (
 )
 
 from memory_core.models import RetrievalConfig
-from memory_core.transport import LocalTransport
+from memory_core.transport import get_transport
 
 server = Server("clickmem")
-_transport: LocalTransport | None = None
+_transport = None
 
 
-def _get_transport() -> LocalTransport:
+def _get_transport():
     global _transport
     if _transport is None:
-        _transport = LocalTransport()
+        _transport = get_transport()
     return _transport
 
 
