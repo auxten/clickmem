@@ -1,17 +1,101 @@
-"""LLM call wrapper using litellm.
+"""LLM provider — routes to local or remote model based on configuration.
 
-Configurable via environment variables:
-- CLICKMEM_LLM_MODEL: model name (default: gpt-4o-mini)
-- API keys via their respective env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+Environment variables:
+- CLICKMEM_LLM_MODE:   "local" | "remote" | "auto"  (default: "auto")
+- CLICKMEM_LLM_MODEL:  remote model name              (default: "gpt-4o-mini")
+- CLICKMEM_LOCAL_MODEL: local model path               (default: "Qwen/Qwen3.5-2B")
+
+In *auto* mode the provider tries the local engine first; if it cannot be
+loaded (missing dependencies, unsupported platform, …) it falls back to
+the remote engine via litellm.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+# Module-level singleton — loading a 2B model is expensive, do it once.
+_local_engine = None
+_local_engine_failed = False
 
 
-def get_llm_complete():
-    """Return a callable (prompt: str) -> str using litellm, or None if unavailable."""
+def get_llm_complete() -> Optional[Callable[[str], str]]:
+    """Return a ``(prompt: str) -> str`` callable, or ``None`` if unavailable."""
+    mode = os.environ.get("CLICKMEM_LLM_MODE", "auto").lower()
+
+    if mode == "local":
+        return _get_local_complete()
+    if mode == "remote":
+        return _get_remote_complete()
+
+    # auto: prefer local, fall back to remote
+    local = _get_local_complete()
+    if local is not None:
+        return local
+    return _get_remote_complete()
+
+
+def get_llm_mode() -> str:
+    """Return the active mode string for diagnostics."""
+    return os.environ.get("CLICKMEM_LLM_MODE", "auto").lower()
+
+
+def get_llm_info() -> dict:
+    """Return diagnostic info about the current LLM configuration."""
+    mode = get_llm_mode()
+    info: dict = {"mode": mode}
+
+    if mode in ("local", "auto"):
+        model = os.environ.get("CLICKMEM_LOCAL_MODEL", "Qwen/Qwen3.5-2B")
+        info["local_model"] = model
+        if _local_engine is not None:
+            info["local_backend"] = _local_engine.backend
+            info["local_loaded"] = True
+        else:
+            info["local_loaded"] = False
+
+    if mode in ("remote", "auto"):
+        info["remote_model"] = os.environ.get("CLICKMEM_LLM_MODEL", "gpt-4o-mini")
+
+    return info
+
+
+# ------------------------------------------------------------------
+# Local engine
+# ------------------------------------------------------------------
+
+def _get_local_complete() -> Optional[Callable[[str], str]]:
+    global _local_engine, _local_engine_failed
+
+    if _local_engine is not None:
+        return _local_engine.complete
+
+    if _local_engine_failed:
+        return None
+
+    try:
+        from memory_core.local_llm import LocalLLMEngine
+
+        engine = LocalLLMEngine()
+        engine.load()
+        _local_engine = engine
+        logger.info("Local LLM ready: %s (%s)", engine.model_name, engine.backend)
+        return engine.complete
+    except Exception as exc:
+        _local_engine_failed = True
+        logger.debug("Local LLM not available: %s", exc)
+        return None
+
+
+# ------------------------------------------------------------------
+# Remote engine (litellm)
+# ------------------------------------------------------------------
+
+def _get_remote_complete() -> Optional[Callable[[str], str]]:
     try:
         import litellm
     except ImportError:

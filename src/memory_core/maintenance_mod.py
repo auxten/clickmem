@@ -6,53 +6,58 @@ promote_to_semantic, review_semantic, and run_all.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
+from memory_core.json_utils import extract_json_or
 from memory_core.models import Memory
 
 if TYPE_CHECKING:
     from memory_core.db import MemoryDB
 
-_COMPRESS_PROMPT_TEMPLATE = """Compress the following episodic memories from {month} into a single summary.
+# ---------------------------------------------------------------------------
+# Prompt templates — kept short and explicit for small-model compatibility.
+# Every prompt includes a concrete JSON example so 2B models know the format.
+# ---------------------------------------------------------------------------
+
+_COMPRESS_PROMPT = """\
+Summarize the following episodic memories from {month} into one concise paragraph.
 
 Memories:
 {memories}
 
-Return a JSON object with:
-- summary: a concise summary of the key events/decisions from this month
-- category: the primary category (decision, event, insight, etc.)
-- tags: relevant tags capturing the key themes
-- entities: named entities mentioned
+Return ONLY a JSON object like this example:
+{{"summary": "In January the team migrated to PostgreSQL and adopted gRPC.", "category": "event", "tags": ["migration", "grpc"], "entities": ["PostgreSQL"]}}
+"""
 
-Return only the JSON object, no other text."""
+_PROMOTE_PROMPT = """\
+The tag "{tag}" appeared {count} times in recent memories.
 
-_PROMOTE_PROMPT_TEMPLATE = """The tag "{tag}" has appeared {count} times in episodic memories.
-
-Sample memories with this tag:
+Samples:
 {samples}
 
-Should this pattern be promoted to a durable semantic memory?
-If yes, distill the pattern into a single concise fact.
+Should this be saved as a long-term fact? If yes, write a single sentence capturing the pattern.
 
-Return a JSON object:
-{{"should_promote": true/false, "content": "...", "category": "...", "tags": ["..."]}}
+Return ONLY a JSON object:
+{{"should_promote": true, "content": "The team regularly uses microservices.", "category": "knowledge", "tags": ["microservices"]}}
 
-Return only the JSON object."""
+If not worth promoting:
+{{"should_promote": false, "content": "", "category": "", "tags": []}}
+"""
 
-_REVIEW_PROMPT_TEMPLATE = """Review the following semantic (durable knowledge) memories for staleness.
+_REVIEW_PROMPT = """\
+Review these long-term memories. Identify any that are outdated or wrong.
 
 Memories:
 {memories}
 
-Identify any that are:
-1. No longer accurate (stale_ids: list of IDs to remove)
-2. Should be updated (updates: list of {{id, new_content}})
+Return ONLY a JSON object:
+{{"stale_ids": ["id1"], "updates": [{{"id": "id2", "new_content": "corrected text"}}]}}
 
-Return a JSON object:
-{{"stale_ids": [...], "updates": [...]}}
+If everything looks fine:
+{{"stale_ids": [], "updates": []}}
+"""
 
-Return only the JSON object."""
+_REVIEW_BATCH_SIZE = 10
 
 
 class maintenance:
@@ -67,7 +72,6 @@ class maintenance:
         reviewed = 0
 
         if llm_complete and emb:
-            # Try compressing old months (simplified: skip auto-detection)
             promoted = maintenance.promote_to_semantic(db, llm_complete, emb)
 
         if llm_complete:
@@ -113,14 +117,10 @@ class maintenance:
             f"- [{m.category}] {m.content} (tags: {', '.join(m.tags)})"
             for m in entries
         )
-        prompt = _COMPRESS_PROMPT_TEMPLATE.format(month=month, memories=memories_text)
+        prompt = _COMPRESS_PROMPT.format(month=month, memories=memories_text)
         raw = llm_complete(prompt)
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return 0
-
+        data = extract_json_or(raw, {}, expect="object")
         summary_content = data.get("summary", "")
         if not summary_content:
             return 0
@@ -136,7 +136,6 @@ class maintenance:
         )
         db.insert(summary)
 
-        # Deactivate original entries
         for m in entries:
             db.deactivate(m.id)
 
@@ -150,7 +149,6 @@ class maintenance:
 
         promoted_count = 0
         for tag, count in tag_freqs.items():
-            # Get sample memories for this tag
             samples = db.find_by_tags([tag])
             episodic_samples = [m for m in samples if m.layer == "episodic"][:5]
             if not episodic_samples:
@@ -160,16 +158,12 @@ class maintenance:
                 f"- {m.content} (tags: {', '.join(m.tags)})"
                 for m in episodic_samples
             )
-            prompt = _PROMOTE_PROMPT_TEMPLATE.format(
+            prompt = _PROMOTE_PROMPT.format(
                 tag=tag, count=count, samples=samples_text
             )
             raw = llm_complete(prompt)
 
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-
+            data = extract_json_or(raw, {}, expect="object")
             if not data.get("should_promote", False):
                 continue
 
@@ -197,28 +191,29 @@ class maintenance:
         if not semantic:
             return 0
 
-        memories_text = "\n".join(
-            f"- [id={m.id}] [{m.category}] {m.content}"
-            for m in semantic
-        )
-        prompt = _REVIEW_PROMPT_TEMPLATE.format(memories=memories_text)
-        raw = llm_complete(prompt)
+        total_reviewed = 0
+        for start in range(0, len(semantic), _REVIEW_BATCH_SIZE):
+            batch = semantic[start : start + _REVIEW_BATCH_SIZE]
+            memories_text = "\n".join(
+                f"- [id={m.id}] [{m.category}] {m.content}" for m in batch
+            )
+            prompt = _REVIEW_PROMPT.format(memories=memories_text)
+            raw = llm_complete(prompt)
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return len(semantic)
+            data = extract_json_or(raw, {"stale_ids": [], "updates": []}, expect="object")
 
-        for stale_id in data.get("stale_ids", []):
-            db.deactivate(stale_id)
+            for stale_id in data.get("stale_ids", []):
+                db.deactivate(stale_id)
 
-        for update in data.get("updates", []):
-            uid = update.get("id", "")
-            new_content = update.get("new_content", "")
-            if uid and new_content:
-                try:
-                    db.update_content(uid, new_content)
-                except ValueError:
-                    pass
+            for update in data.get("updates", []):
+                uid = update.get("id", "")
+                new_content = update.get("new_content", "")
+                if uid and new_content:
+                    try:
+                        db.update_content(uid, new_content)
+                    except ValueError:
+                        pass
 
-        return len(semantic)
+            total_reviewed += len(batch)
+
+        return total_reviewed

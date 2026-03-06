@@ -16,6 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["litellm>=1.0"]
+local-llm = [
+    "torch>=2.0",
+    "transformers>=4.40",
+]
+mlx = ["mlx-lm>=0.14"]
 server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

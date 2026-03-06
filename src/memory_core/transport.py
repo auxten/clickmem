@@ -206,13 +206,11 @@ class LocalTransport:
             }
 
         from memory_core.maintenance_mod import maintenance as maint
+        from memory_core.llm import get_llm_complete
         emb = self._get_emb()
+        llm = get_llm_complete()
 
-        def _mock_llm(prompt: str) -> str:
-            from tests.helpers.mock_llm import MockLLMComplete
-            return MockLLMComplete()(prompt)
-
-        return maint.run_all(db, llm_complete=_mock_llm, emb=emb)
+        return maint.run_all(db, llm_complete=llm, emb=emb)
 
     def sql(self, query: str) -> list[dict]:
         db = self._get_db()

@@ -2,38 +2,29 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from memory_core.db import MemoryDB
+from memory_core.json_utils import extract_json
 from memory_core.models import Memory, RetrievalConfig
 from memory_core.retrieval import hybrid_search
 
 SIMILARITY_THRESHOLD = 0.5
 
 UPSERT_PROMPT_TEMPLATE = """\
-You are a memory management assistant. Your task is to decide how to handle a new memory \
-given existing similar memories.
+Decide how to handle a new memory given existing similar memories.
 
-## New Memory
-{new_content}
+New memory: {new_content}
 
-## Existing Memories
+Existing memories:
 {formatted_existing}
 
-## Instructions
-For each existing memory, decide one action:
-- NOOP: existing memory is unrelated or complementary, no change needed
-- UPDATE: new memory corrects or enriches this existing memory. Provide merged content in "updated_content".
-- DELETE: existing memory is wrong/obsolete and should be removed
+For each existing memory pick one action: NOOP, UPDATE (provide merged text), or DELETE.
+Then decide if the new memory should be added separately (true/false).
 
-Then decide: should the new memory be added as a separate entry?
-- true: if new memory contains distinct information not captured by any UPDATE
-- false: if new memory's information is fully captured by an UPDATE to an existing memory
-
-Return ONLY a JSON object (no markdown fences):
-{{"memory_actions": [{{"existing_id": "...", "action": "NOOP|UPDATE|DELETE", "updated_content": "..."}}], "should_add": true|false}}
+Return ONLY a JSON object like:
+{{"memory_actions": [{{"existing_id": "abc", "action": "UPDATE", "updated_content": "merged text"}}], "should_add": false}}
 """
 
 
@@ -63,18 +54,8 @@ def _format_existing(results: list[dict]) -> str:
 
 
 def _parse_llm_response(response: str) -> Optional[dict]:
-    """Parse LLM JSON response, stripping markdown fences if present."""
-    text = response.strip()
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    """Parse LLM JSON response with robust extraction."""
+    return extract_json(response, expect="object")
 
 
 def upsert(

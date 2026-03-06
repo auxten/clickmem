@@ -2,47 +2,39 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
+from memory_core.json_utils import extract_json_or
 from memory_core.models import Memory
 
 if TYPE_CHECKING:
     from memory_core.db import MemoryDB
 
-_EXTRACT_PROMPT_TEMPLATE = """Analyze the following conversation and extract memories.
-
-For each memory, determine:
-- content: a concise natural-language description
-- layer: "working" (current focus), "episodic" (specific events/decisions), or "semantic" (persistent facts about the user)
-- category: one of decision, preference, event, person, project, knowledge, todo, insight
-- tags: relevant keyword tags
-- entities: names of people, tools, or concepts mentioned
+_EXTRACT_PROMPT = """\
+Extract important facts from this conversation as structured memories.
 
 Conversation:
 {conversation}
 
-Return a JSON array of extracted memories. Example:
-[
-  {{"content": "...", "layer": "episodic", "category": "decision", "tags": ["..."], "entities": ["..."]}}
-]
+For each memory choose:
+- layer: "working" (current focus), "episodic" (event/decision), or "semantic" (durable fact)
+- category: decision | preference | event | person | project | knowledge | todo | insight
 
-Return only the JSON array, no other text."""
+Return ONLY a JSON array. Example:
+[{{"content": "Team decided to use PostgreSQL", "layer": "episodic", "category": "decision", "tags": ["database"], "entities": ["PostgreSQL"]}}]
+"""
 
-_EMERGENCY_PROMPT_TEMPLATE = """This is an emergency context preservation before compaction.
+_EMERGENCY_PROMPT = """\
+This is an emergency context preservation before compaction.
 Extract the most important information from the following context as episodic memories.
 
 Context:
 {context}
 
-Return a JSON array of memories to preserve. Each must have:
-- content: what to remember
-- layer: "episodic"
-- category: one of decision, preference, event, person, project, knowledge, todo, insight
-- tags: relevant keywords
-- entities: named entities
-
-Return only the JSON array, no other text."""
+Return ONLY a JSON array. Each item must have: content, layer (use "episodic"), category, tags, entities.
+Example:
+[{{"content": "Debugging vector search — cosine scores too low", "layer": "episodic", "category": "event", "tags": ["debugging"], "entities": []}}]
+"""
 
 
 class MemoryExtractor:
@@ -64,7 +56,7 @@ class MemoryExtractor:
         conversation = "\n".join(
             f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages
         )
-        prompt = _EXTRACT_PROMPT_TEMPLATE.format(conversation=conversation)
+        prompt = _EXTRACT_PROMPT.format(conversation=conversation)
         raw_response = llm_complete(prompt)
 
         memories = _parse_llm_memories(raw_response)
@@ -73,7 +65,6 @@ class MemoryExtractor:
             layer = mem_data.get("layer", "episodic")
             if layer == "working":
                 self._db.set_working(mem_data.get("content", ""))
-                # get working memory id
                 rows = self._db.list_by_layer("working", limit=1)
                 if rows:
                     ids.append(rows[0].id)
@@ -95,7 +86,7 @@ class MemoryExtractor:
         return ids
 
     def emergency_flush(self, context: str, llm_complete) -> list[str]:
-        prompt = _EMERGENCY_PROMPT_TEMPLATE.format(context=context)
+        prompt = _EMERGENCY_PROMPT.format(context=context)
         raw_response = llm_complete(prompt)
 
         memories = _parse_llm_memories(raw_response)
@@ -118,13 +109,7 @@ class MemoryExtractor:
 
 def _parse_llm_memories(raw: str) -> list[dict]:
     """Parse LLM response into a list of memory dicts."""
-    raw = raw.strip()
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return parsed
-        if isinstance(parsed, dict):
-            return [parsed]
-    except json.JSONDecodeError:
-        pass
-    return []
+    result = extract_json_or(raw, [], expect="array")
+    if isinstance(result, dict):
+        return [result]
+    return result

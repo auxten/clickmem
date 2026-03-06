@@ -57,11 +57,11 @@ class MockLLMComplete:
         # Default keyword routing
         if "extract" in prompt_lower:
             return self._extract_response()
-        elif "compress" in prompt_lower:
+        elif "compress" in prompt_lower or "summarize" in prompt_lower:
             return self._compress_response()
-        elif "promote" in prompt_lower:
+        elif "promote" in prompt_lower or "long-term" in prompt_lower:
             return self._promote_response()
-        elif "review" in prompt_lower:
+        elif "review" in prompt_lower or "outdated" in prompt_lower:
             return self._review_response()
         elif "working" in prompt_lower:
             return self._working_response()

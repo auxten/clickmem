@@ -8,6 +8,7 @@ from memory_core.extractor import MemoryExtractor
 from memory_core.maintenance_mod import maintenance
 from memory_core.md_sync_mod import md_sync
 from memory_core.import_openclaw import import_workspace_memories, import_sqlite_chunks
+from memory_core.llm import get_llm_complete, get_llm_info
 
 __all__ = [
     "Memory",
@@ -20,4 +21,6 @@ __all__ = [
     "md_sync",
     "import_workspace_memories",
     "import_sqlite_chunks",
+    "get_llm_complete",
+    "get_llm_info",
 ]

@@ -11,6 +11,9 @@ import os
 
 # Force CLI to use in-memory DB during tests
 os.environ["CLICKMEM_DB_PATH"] = ":memory:"
+# Use local mode so get_llm_complete() returns None when no model is available
+# (rather than returning a litellm function that fails at call time)
+os.environ.setdefault("CLICKMEM_LLM_MODE", "local")
 
 import pytest
 
@@ -104,21 +107,24 @@ def retrieval_config():
 
 @pytest.fixture(autouse=True)
 def _reset_factory():
-    """Reset the MemoryFactory counter and CLI/transport singletons between tests."""
+    """Reset the MemoryFactory counter and CLI/transport/LLM singletons between tests."""
     MemoryFactory.reset()
-    # Reset CLI singletons so each test gets clean state
     import memory_core.cli as cli_mod
     cli_mod._db_instance = None
     cli_mod._transport_instance = None
     cli_mod._remote_url = None
     cli_mod._remote_api_key = None
-    # Reset server transport singleton
     import memory_core.server as server_mod
     server_mod._transport = None
     server_mod._api_key_env = None
     server_mod._debug_mode = False
+    import memory_core.llm as llm_mod
+    llm_mod._local_engine = None
+    llm_mod._local_engine_failed = False
     yield
     MemoryFactory.reset()
     cli_mod._db_instance = None
     cli_mod._transport_instance = None
     server_mod._transport = None
+    llm_mod._local_engine = None
+    llm_mod._local_engine_failed = False

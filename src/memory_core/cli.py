@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,13 @@ from rich.table import Table
 
 from memory_core.models import Memory, RetrievalConfig
 from memory_core.import_openclaw import import_workspace_memories, import_sqlite_chunks
+
+_log_level = os.environ.get("CLICKMEM_LOG_LEVEL", "WARNING").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.WARNING),
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
 
 app = typer.Typer(name="memory", help="ClickMem — unified memory center for AI coding agents")
 console = Console()
@@ -261,13 +269,17 @@ def review(
 def status(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Show per-layer statistics."""
+    """Show per-layer statistics and LLM configuration."""
     t = _get_transport()
     data = t.status()
     counts = data.get("counts", {})
     total = data.get("total", 0)
 
+    from memory_core.llm import get_llm_info
+    llm_info = get_llm_info()
+
     if json_output:
+        data["llm"] = llm_info
         typer.echo(json.dumps(data))
         return
 
@@ -276,6 +288,12 @@ def status(
     console.print(f"L2 Semantic   {counts.get('semantic', 0):>4} entries")
     console.print(f"{'─' * 35}")
     console.print(f"Total         {total:>4} entries")
+    console.print(f"\nLLM mode: {llm_info['mode']}")
+    if llm_info.get("local_model"):
+        backend = llm_info.get("local_backend", "not loaded")
+        console.print(f"  Local:  {llm_info['local_model']} ({backend})")
+    if llm_info.get("remote_model"):
+        console.print(f"  Remote: {llm_info['remote_model']}")
 
 
 @app.command()
