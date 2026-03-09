@@ -310,15 +310,16 @@ _SERVER_PROBE_TIMEOUT = 2.0
 
 
 def get_transport(remote: str | None = None, api_key: str | None = None) -> LocalTransport | RemoteTransport:
-    """Factory: return RemoteTransport if a remote URL is given, else LocalTransport.
+    """Factory for **client** use (CLI, plugins) — always returns RemoteTransport.
 
-    Priority order (server-first to avoid chDB file-lock contention):
-      1. Explicit ``remote`` / ``CLICKMEM_REMOTE`` env  → RemoteTransport
-      2. Local server at 127.0.0.1:9527 (quick probe)   → RemoteTransport
-      3. Direct chDB via LocalTransport                  → LocalTransport
+    Server processes (``clickmem-mcp``, ``memory serve``) create
+    ``LocalTransport`` directly; this function is for code that connects
+    to a running API server.
 
-    On localhost the probe is nearly free: if nothing listens on 9527 the
-    kernel returns ECONNREFUSED immediately.
+    Priority:
+      1. Explicit ``remote`` / ``CLICKMEM_REMOTE`` env → RemoteTransport
+      2. Local server at 127.0.0.1:9527 (quick probe)  → RemoteTransport
+      3. Error — no server available
     """
     remote = remote or os.environ.get("CLICKMEM_REMOTE")
     api_key = api_key or os.environ.get("CLICKMEM_API_KEY", "")
@@ -332,7 +333,7 @@ def get_transport(remote: str | None = None, api_key: str | None = None) -> Loca
             remote = found
         return RemoteTransport(remote, api_key=api_key)
 
-    # 1) Probe local server first (avoids chDB lock contention)
+    # Probe local server
     try:
         import httpx
         with httpx.Client(base_url=_LOCALHOST_URL, timeout=_SERVER_PROBE_TIMEOUT) as probe:
@@ -340,16 +341,8 @@ def get_transport(remote: str | None = None, api_key: str | None = None) -> Loca
             resp.raise_for_status()
         return RemoteTransport(_LOCALHOST_URL, api_key=api_key)
     except Exception:
-        pass
-
-    # 2) No server running — open chDB directly
-    try:
-        t = LocalTransport()
-        t._get_db()
-        return t
-    except Exception:
         raise RuntimeError(
-            "Cannot open chDB and no local server found at "
-            f"{_LOCALHOST_URL}. Start the server with 'memory serve' "
-            "or stop the other process holding the chDB lock."
+            f"No ClickMem API server at {_LOCALHOST_URL}. "
+            "The server starts automatically with Cursor/Claude Code (clickmem-mcp) "
+            "or manually via 'memory serve'."
         )

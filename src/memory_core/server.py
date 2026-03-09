@@ -5,6 +5,7 @@ Start with: memory serve --host 0.0.0.0 --port 9527
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -121,7 +122,7 @@ def set_debug_mode(enabled: bool):
 @app.get("/v1/health")
 async def health():
     t = _get_transport()
-    return t.health()
+    return await asyncio.to_thread(t.health)
 
 
 @app.post("/v1/recall", dependencies=[Depends(auth_dep)])
@@ -133,14 +134,15 @@ async def recall(req: RecallRequest):
         layer=req.layer,
         category=req.category,
     )
-    results = t.recall(req.query, cfg=cfg, min_score=req.min_score)
+    results = await asyncio.to_thread(t.recall, req.query, cfg=cfg, min_score=req.min_score)
     return {"memories": results}
 
 
 @app.post("/v1/remember", dependencies=[Depends(auth_dep)])
 async def remember(req: RememberRequest):
     t = _get_transport()
-    return t.remember(
+    return await asyncio.to_thread(
+        t.remember,
         content=req.content, layer=req.layer,
         category=req.category, tags=req.tags,
         no_upsert=req.no_upsert,
@@ -150,14 +152,14 @@ async def remember(req: RememberRequest):
 @app.post("/v1/extract", dependencies=[Depends(auth_dep)])
 async def extract(req: ExtractRequest):
     t = _get_transport()
-    ids = t.extract(text=req.text, session_id=req.session_id)
+    ids = await asyncio.to_thread(t.extract, text=req.text, session_id=req.session_id)
     return {"ids": ids}
 
 
 @app.delete("/v1/forget/{memory_id}", dependencies=[Depends(auth_dep)])
 async def forget(memory_id: str):
     t = _get_transport()
-    result = t.forget(memory_id)
+    result = await asyncio.to_thread(t.forget, memory_id)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -166,7 +168,7 @@ async def forget(memory_id: str):
 @app.get("/v1/review", dependencies=[Depends(auth_dep)])
 async def review(layer: str = "semantic", limit: int = 100):
     t = _get_transport()
-    data = t.review(layer=layer, limit=limit)
+    data = await asyncio.to_thread(t.review, layer=layer, limit=limit)
     if layer == "working":
         return {"layer": "working", "content": data}
     memories = []
@@ -183,16 +185,16 @@ async def review(layer: str = "semantic", limit: int = 100):
     return {"layer": layer, "memories": memories}
 
 
-@app.get("/v1/status", dependencies=[Depends(auth_dep)])
+@app.api_route("/v1/status", methods=["GET", "POST"], dependencies=[Depends(auth_dep)])
 async def status():
     t = _get_transport()
-    return t.status()
+    return await asyncio.to_thread(t.status)
 
 
 @app.post("/v1/maintain", dependencies=[Depends(auth_dep)])
 async def maintain(req: MaintainRequest):
     t = _get_transport()
-    return t.maintain(dry_run=req.dry_run)
+    return await asyncio.to_thread(t.maintain, dry_run=req.dry_run)
 
 
 @app.post("/v1/sql", dependencies=[Depends(auth_dep)])
@@ -201,7 +203,7 @@ async def sql(req: SqlRequest):
         raise HTTPException(status_code=403, detail="SQL endpoint requires --debug mode")
     t = _get_transport()
     try:
-        results = t.sql(req.query)
+        results = await asyncio.to_thread(t.sql, req.query)
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
