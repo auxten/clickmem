@@ -15,8 +15,12 @@ class TestLocalTransport:
 
     @pytest.fixture
     def transport(self):
+        from tests.helpers.mock_embedding import MockEmbeddingEngine
         t = LocalTransport(db_path=":memory:")
         t._get_db()._truncate()
+        mock_emb = MockEmbeddingEngine(dimension=256)
+        mock_emb.load()
+        t._emb = mock_emb
         return t
 
     def test_health(self, transport):
@@ -118,11 +122,16 @@ class TestLocalTransport:
 
 
 class TestGetTransport:
-    """Test the get_transport factory function."""
+    """Test the get_transport factory function.
 
-    def test_default_returns_local(self):
-        t = get_transport()
-        assert isinstance(t, LocalTransport)
+    ``get_transport()`` is for **client** use only (CLI, plugins).
+    It never opens chDB directly — it requires a running API server.
+    """
+
+    def test_no_server_raises(self):
+        """Without a running server, get_transport() raises RuntimeError."""
+        with pytest.raises(RuntimeError, match="No ClickMem API server"):
+            get_transport()
 
     def test_remote_url_returns_remote(self):
         t = get_transport(remote="http://localhost:9527")

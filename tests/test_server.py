@@ -35,23 +35,29 @@ def _reset_server_state():
     os.environ.pop("CLICKMEM_API_KEY", None)
 
 
+def _make_test_transport():
+    """Create a LocalTransport with mock embedding (avoids loading real model)."""
+    from memory_core.transport import LocalTransport
+    from tests.helpers.mock_embedding import MockEmbeddingEngine
+    t = LocalTransport(db_path=":memory:")
+    t._get_db()._truncate()
+    mock_emb = MockEmbeddingEngine(dimension=256)
+    mock_emb.load()
+    t._emb = mock_emb
+    return t
+
+
 @pytest.fixture
 def client():
     """Provide a FastAPI TestClient backed by in-memory LocalTransport."""
-    from memory_core.transport import LocalTransport
-    t = LocalTransport(db_path=":memory:")
-    t._get_db()._truncate()
-    server_mod._transport = t
+    server_mod._transport = _make_test_transport()
     return TestClient(app)
 
 
 @pytest.fixture
 def authed_client():
     """Provide a client with API key auth enabled."""
-    from memory_core.transport import LocalTransport
-    t = LocalTransport(db_path=":memory:")
-    t._get_db()._truncate()
-    server_mod._transport = t
+    server_mod._transport = _make_test_transport()
     os.environ["CLICKMEM_API_KEY"] = "test-secret-key"
     server_mod._api_key_env = None  # force re-read
     return TestClient(app)
@@ -312,11 +318,9 @@ class TestCombinedApp:
 
     @pytest.fixture
     def combined_client(self):
-        from memory_core.transport import LocalTransport
         import memory_core.mcp_server as mcp_mod
 
-        t = LocalTransport(db_path=":memory:")
-        t._get_db()._truncate()
+        t = _make_test_transport()
         server_mod._transport = t
         mcp_mod._transport = None
 

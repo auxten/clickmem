@@ -29,10 +29,14 @@ pytestmark = pytest.mark.skipif(not HAS_MCP, reason="mcp not installed")
 
 @pytest.fixture(autouse=True)
 def _reset_mcp_transport():
-    """Use in-memory LocalTransport for each test, with clean DB."""
+    """Use in-memory LocalTransport with mock embedding for each test."""
     from memory_core.transport import LocalTransport
+    from tests.helpers.mock_embedding import MockEmbeddingEngine
     t = LocalTransport(db_path=":memory:")
     t._get_db()._truncate()
+    mock_emb = MockEmbeddingEngine(dimension=256)
+    mock_emb.load()
+    t._emb = mock_emb
     mcp_mod._transport = t
     yield
     mcp_mod._transport = None

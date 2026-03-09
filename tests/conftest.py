@@ -105,13 +105,41 @@ def retrieval_config():
     )
 
 
+_shared_cli_transport = None
+
+
+def _get_shared_cli_transport():
+    """Return a session-scoped LocalTransport with mock embedding for CLI tests.
+
+    Uses MockEmbeddingEngine to avoid loading the real Qwen3-Embedding-0.6B
+    model (~600M params, ~60s load time) which is unnecessary for unit tests.
+    """
+    global _shared_cli_transport
+    if _shared_cli_transport is None:
+        from memory_core.transport import LocalTransport
+        _shared_cli_transport = LocalTransport()
+        mock_emb = MockEmbeddingEngine(dimension=256)
+        mock_emb.load()
+        _shared_cli_transport._emb = mock_emb
+    return _shared_cli_transport
+
+
 @pytest.fixture(autouse=True)
 def _reset_factory():
-    """Reset the MemoryFactory counter and CLI/transport/LLM singletons between tests."""
+    """Reset the MemoryFactory counter and CLI/transport/LLM singletons between tests.
+
+    CLI commands use ``get_transport()`` which now requires a running HTTP
+    server.  For unit tests we bypass that by injecting a shared
+    ``LocalTransport`` directly (backed by the in-memory chDB set via
+    ``CLICKMEM_DB_PATH``).  The DB is truncated between tests for isolation;
+    the embedding engine is reused to avoid reloading the model every time.
+    """
     MemoryFactory.reset()
+    shared_t = _get_shared_cli_transport()
+    shared_t._get_db()._truncate()
     import memory_core.cli as cli_mod
     cli_mod._db_instance = None
-    cli_mod._transport_instance = None
+    cli_mod._transport_instance = shared_t
     cli_mod._remote_url = None
     cli_mod._remote_api_key = None
     import memory_core.server as server_mod
