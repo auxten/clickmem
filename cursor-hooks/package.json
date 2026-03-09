@@ -1,0 +1,8 @@
+{
+  "name": "clickmem-cursor-hooks",
+  "version": "1.0.0",
+  "description": "Cursor hooks integration with ClickMem for automatic memory recall and capture",
+  "type": "module",
+  "main": "hook-handler.js",
+  "dependencies": {}
+}

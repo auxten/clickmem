@@ -180,15 +180,57 @@ print('  Skill directory registered in', cfg_path)
 " || echo "  Warning: failed to register skill directory"
 fi
 
-# ── 8. Install Cursor hooks ────────────────────────────────────────────
+# ── 8. Install Cursor hooks (user-level, works for all projects) ───────
 
-echo "▸ Setting up Cursor hooks..."
-CURSOR_HOOKS_DIR="$SCRIPT_DIR/.cursor/hooks"
-if [ -d "$CURSOR_HOOKS_DIR" ]; then
-    echo "  Cursor hooks directory exists at $CURSOR_HOOKS_DIR"
-    echo "  Hooks will auto-activate when Cursor opens this project."
+echo "▸ Installing Cursor hooks (user-level)..."
+CURSOR_USER_DIR="$HOME/.cursor"
+CURSOR_HOOKS_SRC="$SCRIPT_DIR/cursor-hooks"
+CURSOR_HOOKS_DST="$CURSOR_USER_DIR/hooks/clickmem"
+CURSOR_HOOKS_JSON="$CURSOR_USER_DIR/hooks.json"
+
+if [ -d "$CURSOR_HOOKS_SRC" ]; then
+    mkdir -p "$CURSOR_USER_DIR/hooks"
+
+    # Symlink the hooks implementation
+    if [ -L "$CURSOR_HOOKS_DST" ] || [ -d "$CURSOR_HOOKS_DST" ]; then
+        rm -rf "$CURSOR_HOOKS_DST"
+    fi
+    ln -s "$CURSOR_HOOKS_SRC" "$CURSOR_HOOKS_DST"
+    echo "  Linked: $CURSOR_HOOKS_DST → $CURSOR_HOOKS_SRC"
+
+    # Generate/merge hooks.json with absolute paths
+    HOOK_CMD="node $CURSOR_HOOKS_DST/hook-handler.js"
+    python3 -c "
+import json, os
+hooks_json = '$CURSOR_HOOKS_JSON'
+cmd = '$HOOK_CMD'
+hook_entry = [{'command': cmd}]
+hook_events = [
+    'sessionStart', 'sessionEnd',
+    'beforeSubmitPrompt', 'afterAgentResponse', 'afterAgentThought',
+    'beforeShellExecution', 'afterShellExecution',
+    'beforeMCPExecution', 'afterMCPExecution',
+    'beforeReadFile', 'afterFileEdit',
+    'stop', 'beforeTabFileRead', 'afterTabFileEdit',
+]
+if os.path.exists(hooks_json):
+    with open(hooks_json) as f:
+        cfg = json.load(f)
+else:
+    cfg = {'version': 1, 'hooks': {}}
+for event in hook_events:
+    existing = cfg['hooks'].get(event, [])
+    # Remove old clickmem entries
+    existing = [e for e in existing if 'clickmem' not in e.get('command', '')]
+    existing.extend(hook_entry)
+    cfg['hooks'][event] = existing
+with open(hooks_json, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('  hooks.json updated:', hooks_json)
+"
+    echo "  Cursor hooks active globally for all projects."
 else
-    echo "  Warning: .cursor/hooks directory not found — skipping."
+    echo "  Warning: cursor-hooks/ directory not found — skipping."
 fi
 
 # ── 9. Done ──────────────────────────────────────────────────────────
@@ -212,7 +254,7 @@ echo "   memory service start       # Start the service"
 echo ""
 echo " Skill: /clickmem available in Claude Code"
 echo ""
-echo " Cursor: hooks auto-recall/capture on open"
+echo " Cursor: hooks active globally (~/.cursor/hooks.json)"
 echo ""
 echo " Or use the full path:"
 echo "   $SCRIPT_DIR/.venv/bin/memory status"
