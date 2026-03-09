@@ -34,8 +34,8 @@ export function buildCaptureHandler(cfg, run) {
       const result = await run(["extract", truncated, "--json"]);
       const ids = JSON.parse(result);
       console.log("[clickmem] capture: extracted %d memories", ids.length);
-    } catch {
-      // Fallback: store raw text if LLM extraction fails
+    } catch (extractErr) {
+      console.error("[clickmem] capture: extract failed:", extractErr.message);
       try {
         await run([
           "remember", truncated,
@@ -44,8 +44,9 @@ export function buildCaptureHandler(cfg, run) {
           "--json"
         ]);
         console.log("[clickmem] capture: stored raw (extract unavailable)");
-      } catch (err) {
-        console.error("[clickmem] capture failed:", err.message);
+      } catch (storeErr) {
+        console.error("[clickmem] capture FAILED: could not store memory:", storeErr.message);
+        console.error("[clickmem] Is the ClickMem API server running? (port 9527)");
       }
     }
   };

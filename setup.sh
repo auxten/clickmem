@@ -72,17 +72,29 @@ echo "  uv $(uv --version 2>/dev/null | head -1)"
 echo "▸ Installing dependencies..."
 uv sync --python "$PYTHON" --extra dev
 
-# ── 3. Smoke test ────────────────────────────────────────────────────
+# ── 3. Install & start background service ────────────────────────────
+
+echo "▸ Installing ClickMem service..."
+uv run memory service install < /dev/null 2>&1 | sed 's/^/  /'
+
+# ── 4. Smoke test (with retry — server may need a few seconds) ──────
 
 echo "▸ Smoke test..."
-if uv run memory status --json < /dev/null >/dev/null 2>&1; then
-    echo "  CLI works."
-else
-    echo "Error: smoke test failed — 'memory status' returned non-zero."
-    exit 1
-fi
+for i in 1 2 3 4 5 6; do
+    if uv run memory status --json < /dev/null >/dev/null 2>&1; then
+        echo "  CLI works (via API server on port 9527)."
+        break
+    fi
+    if [ "$i" -eq 6 ]; then
+        echo "Error: smoke test failed — server not responding after 30s."
+        echo "  Check: uv run memory service logs"
+        exit 1
+    fi
+    echo "  Waiting for server to start... (${i}/6)"
+    sleep 5
+done
 
-# ── 4. Import OpenClaw history (if present) ──────────────────────────
+# ── 5. Import OpenClaw history (if present) ──────────────────────────
 
 if [ -d "$HOME/.openclaw" ]; then
     echo "▸ Importing OpenClaw history from ~/.openclaw ..."
@@ -91,7 +103,7 @@ else
     echo "▸ No ~/.openclaw directory found, skipping history import."
 fi
 
-# ── 5. Install OpenClaw plugin ─────────────────────────────────────────
+# ── 6. Install OpenClaw plugin ─────────────────────────────────────────
 
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
 
@@ -130,7 +142,7 @@ else
     echo "▸ No ~/.openclaw/openclaw.json found, skipping plugin installation."
 fi
 
-# ── 6. Install skill (slash command) ─────────────────────────────────
+# ── 7. Install skill (slash command) ─────────────────────────────────
 
 SKILL_SRC="$SCRIPT_DIR/skills/clickmem/SKILL.md"
 
@@ -168,7 +180,18 @@ print('  Skill directory registered in', cfg_path)
 " || echo "  Warning: failed to register skill directory"
 fi
 
-# ── 7. Done ──────────────────────────────────────────────────────────
+# ── 8. Install Cursor hooks ────────────────────────────────────────────
+
+echo "▸ Setting up Cursor hooks..."
+CURSOR_HOOKS_DIR="$SCRIPT_DIR/.cursor/hooks"
+if [ -d "$CURSOR_HOOKS_DIR" ]; then
+    echo "  Cursor hooks directory exists at $CURSOR_HOOKS_DIR"
+    echo "  Hooks will auto-activate when Cursor opens this project."
+else
+    echo "  Warning: .cursor/hooks directory not found — skipping."
+fi
+
+# ── 9. Done ──────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════════"
@@ -181,7 +204,15 @@ echo "   memory remember \"...\"      # Store a memory"
 echo "   memory recall \"query\"      # Semantic search"
 echo "   memory review              # Browse memories"
 echo ""
+echo " Service:"
+echo "   memory service status      # Check background service"
+echo "   memory service logs -f     # Follow server logs"
+echo "   memory service stop        # Stop the service"
+echo "   memory service start       # Start the service"
+echo ""
 echo " Skill: /clickmem available in Claude Code"
+echo ""
+echo " Cursor: hooks auto-recall/capture on open"
 echo ""
 echo " Or use the full path:"
 echo "   $SCRIPT_DIR/.venv/bin/memory status"
