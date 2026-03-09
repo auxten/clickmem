@@ -135,10 +135,12 @@ pip install -e ".[all]"       # server + LLM support
 **What `setup.sh` does:**
 1. Checks Python >= 3.10 and `uv`
 2. Creates venv and installs all dependencies
-3. Downloads the Qwen3-Embedding-0.6B model (~350 MB, first run only)
-4. Runs tests to verify the environment
+3. Installs and starts a background service (launchd on macOS, systemd on Linux)
+4. Smoke-tests the API server (retries while it starts up)
 5. Imports existing OpenClaw history (if `~/.openclaw/` exists)
-6. Installs the OpenClaw plugin hook
+6. Installs the OpenClaw plugin
+7. Installs Claude Code skill (`/clickmem` slash command)
+8. Installs Cursor hooks globally (`~/.cursor/hooks.json`) for auto recall/capture
 
 **Resource usage:** ~500 MB RAM for the embedding model, ~200 MB disk for chDB data (grows with memory count). With a local LLM loaded (~4 GB for Qwen3.5-2B via MLX), total RAM usage is ~4.5 GB.
 
@@ -174,6 +176,24 @@ memory export-context /path/to/workspace
 
 All commands support `--json` for machine-readable output.
 
+### Service — Background Server
+
+ClickMem runs as a background service so the API server (port 9527) is always available. The MCP stdio transport also co-hosts the HTTP API, so CLI commands and plugins can share the same database without chDB lock contention.
+
+```bash
+# Install and start the service (done automatically by setup.sh)
+memory service install
+
+# Manage the service
+memory service status          # Check if running
+memory service logs -f         # Follow server logs
+memory service stop            # Stop the service
+memory service start           # Start the service
+memory service uninstall       # Remove the service
+```
+
+On macOS this creates a launchd user agent (`~/Library/LaunchAgents/com.clickmem.server.plist`); on Linux a systemd user unit (`~/.config/systemd/user/clickmem.service`).
+
 ### Server — LAN Memory Sharing
 
 Start the server so all tools on your network share the same memory. A single process serves **both** the REST API and MCP SSE on one port:
@@ -204,7 +224,7 @@ memory serve --host 0.0.0.0 --debug
 | `POST` | `/v1/extract` | LLM-extract memories from text |
 | `DELETE` | `/v1/forget/{id}` | Delete a memory |
 | `GET` | `/v1/review` | List memories by layer |
-| `GET` | `/v1/status` | Layer statistics |
+| `GET/POST` | `/v1/status` | Layer statistics |
 | `POST` | `/v1/maintain` | Run maintenance |
 | `POST` | `/v1/sql` | Raw SQL (debug mode only) |
 | `GET` | `/sse` | MCP SSE connection |
@@ -236,6 +256,8 @@ ClickMem speaks [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 ```bash
 memory mcp
 ```
+
+In stdio mode, `memory mcp` also starts an HTTP API on port 9527 as a background task, so CLI commands and OpenClaw plugins can reach the same chDB database without lock contention. If the port is already in use (e.g. by `memory serve`), it connects to the existing server instead.
 
 **Remote (SSE) — built into `memory serve`:** No separate command needed. `memory serve` exposes MCP SSE at `/sse` on the same port as the REST API.
 
@@ -298,6 +320,16 @@ For remote:
   }
 }
 ```
+
+#### Cursor Hooks — Automatic Recall & Capture
+
+`setup.sh` installs user-level Cursor hooks (`~/.cursor/hooks.json`) that work across **all** your Cursor projects:
+
+- **`sessionStart`** — Recalls relevant memories and injects them as context
+- **`afterAgentResponse`** — Extracts new memories from each conversation turn
+- **`sessionEnd` / `stop`** — Runs lightweight maintenance
+
+Hooks communicate with the ClickMem API server on `localhost:9527`. All errors are fail-open — hooks never block Cursor.
 
 **MCP Tools available to agents:**
 
