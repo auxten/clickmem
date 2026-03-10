@@ -67,6 +67,11 @@ def _popularity_boost(access_count: int) -> float:
     return 1.0 + 0.03 * math.log1p(access_count)
 
 
+def _refinement_boost(source: str, boost: float) -> float:
+    """Score multiplier for refined memories (source='refinement')."""
+    return boost if source == "refinement" else 1.0
+
+
 def recency_score(
     created_at: datetime | None,
     tau: float = 60.0,
@@ -195,6 +200,7 @@ def hybrid_search(
                 "embedding": m.embedding,
                 "created_at": m.created_at,
                 "access_count": m.access_count,
+                "source": m.source,
             })
 
     if not candidates:
@@ -222,6 +228,7 @@ def hybrid_search(
         elif c["layer"] == "semantic":
             base_score *= recency_score(c["created_at"])
             base_score *= cfg.semantic_boost
+            base_score *= _refinement_boost(c.get("source", ""), cfg.refinement_boost)
 
         # Popularity boost from access frequency
         base_score *= _popularity_boost(c.get("access_count", 0))
