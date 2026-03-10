@@ -2,7 +2,7 @@
 
 Environment variables:
 - CLICKMEM_LLM_MODE:   "local" | "remote" | "auto"  (default: "auto")
-- CLICKMEM_LLM_MODEL:  remote model name              (default: "gpt-4o-mini")
+- CLICKMEM_LLM_MODEL:  remote model name              (default: "Qwen/Qwen3.5-2B")
 - CLICKMEM_LOCAL_MODEL: local model path               (default: "Qwen/Qwen3.5-2B")
 
 In *auto* mode the provider tries the local engine first; if it cannot be
@@ -59,7 +59,7 @@ def get_llm_info() -> dict:
             info["local_loaded"] = False
 
     if mode in ("remote", "auto"):
-        info["remote_model"] = os.environ.get("CLICKMEM_LLM_MODEL", "gpt-4o-mini")
+        info["remote_model"] = os.environ.get("CLICKMEM_LLM_MODEL", "Qwen/Qwen3.5-2B")
 
     return info
 
@@ -101,7 +101,7 @@ def _get_remote_complete() -> Optional[Callable[[str], str]]:
     except ImportError:
         return None
 
-    model = os.environ.get("CLICKMEM_LLM_MODEL", "gpt-4o-mini")
+    model = os.environ.get("CLICKMEM_LLM_MODEL", "Qwen/Qwen3.5-2B")
 
     def complete(prompt: str) -> str:
         kwargs: dict = {

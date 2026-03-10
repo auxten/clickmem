@@ -4,8 +4,10 @@ Backend priority:
 1. MLX (macOS Apple Silicon — fastest, lowest memory)
 2. transformers (cross-platform, installed via sentence-transformers)
 
-Default model: Qwen/Qwen3.5-2B
-Configurable via CLICKMEM_LOCAL_MODEL environment variable.
+Supported models (set via CLICKMEM_LOCAL_MODEL):
+  Qwen/Qwen3.5-2B  — 2B params, ~1.5 GB RAM, fastest (default)
+  Qwen/Qwen3.5-4B  — 4B params, ~3 GB RAM, better extraction quality
+  Qwen/Qwen3.5-9B  — 9B params, ~6 GB RAM, best quality for refinement
 """
 
 from __future__ import annotations
