@@ -176,3 +176,32 @@ class TestEmergencyFlush:
         # The LLM should receive a prompt containing emergency-related content
         assert any("emergency" in c.prompt.lower() or "compaction" in c.prompt.lower()
                     for c in mock_llm.calls)
+
+    def test_extract_propagates_raw_id(self, db, mock_emb, mock_llm):
+        """extract() stores raw_id on created Memory objects."""
+        extractor = MemoryExtractor(db, mock_emb)
+        raw_id = db.insert_raw("s1", "cursor", "Test conversation")
+        ids = extractor.extract(
+            [{"role": "user", "content": "Discuss architecture"}],
+            mock_llm,
+            session_id="s1",
+            raw_id=raw_id,
+        )
+        assert len(ids) > 0
+        for mid in ids:
+            m = db.get(mid)
+            if m and m.layer != "working":
+                assert m.raw_id == raw_id
+
+    def test_extract_without_raw_id(self, db, mock_emb, mock_llm):
+        """extract() works without raw_id (backward compat)."""
+        extractor = MemoryExtractor(db, mock_emb)
+        ids = extractor.extract(
+            [{"role": "user", "content": "Discuss architecture"}],
+            mock_llm,
+        )
+        assert len(ids) > 0
+        for mid in ids:
+            m = db.get(mid)
+            if m and m.layer != "working":
+                assert m.raw_id is None

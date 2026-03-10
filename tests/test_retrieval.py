@@ -362,3 +362,30 @@ class TestRecencyHint:
         assert _detect_recency_hint("last few days work") == 7.0
         assert _detect_recency_hint("what is clickmem") is None
         assert _detect_recency_hint("who is Claire") is None
+
+
+class TestRefinementBoost:
+    """Test that source='refinement' memories get a scoring boost."""
+
+    def test_refined_memory_scores_higher(self, db, mock_emb):
+        """A refined semantic memory should score higher than a similar non-refined one."""
+        raw_mem = make_memory(
+            layer="semantic", content="Team decided to adopt gRPC protocol for backend",
+            embedding=mock_emb.encode_document("Team decided to adopt gRPC protocol for backend"),
+            source="agent",
+        )
+        refined_mem = make_memory(
+            layer="semantic", content="Team uses gRPC for all internal service communication",
+            embedding=mock_emb.encode_document("Team uses gRPC for all internal service communication"),
+            source="refinement",
+        )
+        db.insert(raw_mem)
+        db.insert(refined_mem)
+
+        results = hybrid_search(
+            db, mock_emb, "gRPC services",
+            cfg=RetrievalConfig(top_k=2),
+        )
+        assert len(results) == 2
+        scores = {r["id"]: r["final_score"] for r in results}
+        assert scores[refined_mem.id] > scores[raw_mem.id]
