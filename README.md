@@ -32,28 +32,30 @@ AI coding assistants (Claude Code, Cursor, OpenClaw, etc.) forget everything bet
 
 ClickMem stores memories in [chDB](https://github.com/chdb-io/chdb) (embedded ClickHouse — a full analytical database running in-process) and generates vector embeddings locally with [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B). When your agent starts a conversation, ClickMem automatically recalls relevant memories. When a conversation ends, it captures important information for later.
 
-### Three-Layer Memory Model
+### Memory Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  L0  Working Memory  (scratchpad)                               │
-│  "User is building Phase 2, last discussed HNSW index config"   │
-│  Always injected · Overwritten each conversation · ≤500 tokens  │
-├─────────────────────────────────────────────────────────────────┤
+│  L2  Semantic Memory  (long-term knowledge, highest refinement) │
+│  "[preference] Prefers SwiftUI over UIKit"                      │
+│  "[person] Alice is the backend lead"                           │
+│  Recall priority · Refined memories get scoring boost            │
+│  Updated only on contradiction or continual refinement           │
+├───────── ▲ promote (recurring patterns)  ▲ refine ──────────────┤
 │  L1  Episodic Memory  (event timeline)                          │
 │  "03-04: Decided on Python core + JS plugin architecture"       │
 │  Recalled on demand · Time-decayed · Auto-compressed monthly    │
-├─────────────────────────────────────────────────────────────────┤
-│  L2  Semantic Memory  (long-term knowledge)                     │
-│  "[preference] Prefers SwiftUI over UIKit"                      │
-│  "[person] Alice is the backend lead"                           │
-│  Always injected · Permanent · Updated only on contradiction    │
+│  Carries raw_id for lineage tracking to source transcript       │
+├───────── ▲ extract (LLM structured extraction) ─────────────────┤
+│  Raw Transcripts  (separate table, append-only)                 │
+│  Complete conversation text · Not searched during recall         │
+│  Enables re-extraction and refinement from original data        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **L0 Working** — What the agent is doing right now. Overwritten every session.
-- **L1 Episodic** — What happened and when. Decays over 120 days, old entries compressed into monthly summaries, recurring patterns promoted to L2.
-- **L2 Semantic** — Durable facts, preferences, and people. Never auto-deleted. Smart upsert detects duplicates and merges via LLM.
+- **Raw** — Complete conversation transcripts stored in a separate table. Append-only, no embeddings. Not searched during recall — only consumed by the extraction and refinement pipelines. Enables "re-extraction" when models or prompts improve.
+- **L1 Episodic** — Structured events extracted from raw transcripts. Each entry carries a `raw_id` pointing back to the source transcript. Decays over 120 days, old entries compressed into monthly summaries, recurring patterns promoted to L2.
+- **L2 Semantic** — Durable facts, preferences, and people. Never auto-deleted. Smart upsert detects duplicates and merges via LLM. Refined memories (`source=refinement`) get a 1.15x scoring boost during recall.
 
 ### Search & Retrieval
 
@@ -62,7 +64,8 @@ Memories are found via **hybrid search** combining:
 2. **Keyword matching** — word-level hit rate on content, tags, and entities
 3. **Time decay** — different strategies per layer (see below)
 4. **Popularity boost** — frequently recalled memories score higher
-5. **MMR diversity** — re-ranks to avoid returning redundant results
+5. **Refinement boost** — memories refined by the continual refinement engine score 1.15x higher
+6. **MMR diversity** — re-ranks to avoid returning redundant results
 
 ### Time Decay Weights
 
@@ -93,13 +96,22 @@ L1 episodic weight drops by half every 60 days and is nearly zero after a year �
 
 ### Local LLM for Summarization & Extraction
 
-ClickMem can use a local LLM (default: [Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B)) for memory extraction, smart upsert, and maintenance — no cloud API keys needed. On Apple Silicon, it uses [MLX](https://github.com/ml-explore/mlx) for fast inference; on other platforms, it falls back to HuggingFace Transformers.
+ClickMem can use a local LLM for memory extraction, smart upsert, refinement, and maintenance — no cloud API keys needed. On Apple Silicon, it uses [MLX](https://github.com/ml-explore/mlx) for fast inference; on other platforms, it falls back to HuggingFace Transformers.
+
+**Supported models:**
+
+| Model | Params | RAM | Use case |
+|-------|--------|-----|----------|
+| `Qwen/Qwen3.5-2B` | 2B | ~1.5 GB | Fast extraction, low-resource machines (default) |
+| `Qwen/Qwen3.5-4B` | 4B | ~3 GB | Better extraction quality |
+| `Qwen/Qwen3.5-9B` | 9B | ~6 GB | Best quality for refinement and complex tasks |
 
 ```bash
 # Configure LLM mode
 export CLICKMEM_LLM_MODE=local    # local | remote | auto (default: auto)
-export CLICKMEM_LOCAL_MODEL=Qwen/Qwen3.5-2B   # default
-export CLICKMEM_LLM_MODEL=gpt-4o-mini          # remote fallback model
+export CLICKMEM_LOCAL_MODEL=Qwen/Qwen3.5-2B   # default; also supports 4B and 9B
+export CLICKMEM_LLM_MODEL=Qwen/Qwen3.5-2B      # remote fallback model (default: same as local)
+export CLICKMEM_REFINE_THRESHOLD=1              # auto-refine after N unprocessed raw transcripts
 
 # Install local LLM backend (pick one)
 pip install mlx-lm        # macOS Apple Silicon (recommended)
@@ -107,6 +119,28 @@ pip install transformers   # cross-platform (already included via sentence-trans
 ```
 
 In `auto` mode, ClickMem tries the local model first and falls back to the remote API if unavailable. The local model handles: conversation extraction, episodic compression, pattern promotion, semantic review, and smart upsert deduplication.
+
+### Continual Refinement
+
+When unprocessed raw transcripts accumulate past a configurable threshold (default: 10), ClickMem automatically triggers a **continual refinement** cycle in a background thread:
+
+1. **Re-extract** — Processes unprocessed raw transcripts that may have been missed or can benefit from improved extraction
+2. **Cluster** — Groups similar L2 semantic memories by embedding cosine similarity (threshold > 0.7)
+3. **Deduplicate & Merge** — Uses the LLM to detect duplicate memories within each cluster and merge them into single, stronger entries
+4. **Quality Gate** — Applies an inclusion bar: memories must be actionable, stable across sessions, and non-sensitive to survive
+
+Refined memories are stored with `source=refinement` and receive a scoring boost during recall. Original memories are soft-deleted but preserved for audit.
+
+```bash
+# Run refinement manually
+memory refine
+
+# Dry-run to see what would change
+memory refine --dry-run
+
+# Only run if unprocessed raw >= N
+memory refine --threshold 10
+```
 
 ### Self-Maintenance
 
@@ -139,7 +173,7 @@ pip install -e ".[all]"       # server + LLM support
 4. Smoke-tests the API server (retries while it starts up)
 5. Imports existing OpenClaw history (if `~/.openclaw/` exists)
 6. Installs the OpenClaw plugin
-7. Installs Claude Code skill (`/clickmem` slash command)
+7. Installs Claude Code skill (`/clickmem` slash command) + HTTP hooks for auto recall/capture
 8. Installs Cursor hooks globally (`~/.cursor/hooks.json`) for auto recall/capture
 
 **Resource usage:** ~500 MB RAM for the embedding model, ~200 MB disk for chDB data (grows with memory count). With a local LLM loaded (~4 GB for Qwen3.5-2B via MLX), total RAM usage is ~4.5 GB.
@@ -152,6 +186,9 @@ pip install -e ".[all]"       # server + LLM support
 # Store a memory
 memory remember "User prefers dark mode" --layer semantic --category preference
 
+# Ingest raw conversation text (stores raw + extracts memories)
+memory ingest "user: I like dark mode\nassistant: Noted" --source cli
+
 # Semantic search
 memory recall "UI preferences"
 
@@ -161,11 +198,14 @@ memory forget "dark mode preference"
 # Browse memories
 memory review --layer semantic
 
-# Show statistics
+# Show statistics (includes raw transcript counts)
 memory status
 
 # Run maintenance (cleanup, compression, promotion)
 memory maintain
+
+# Run continual refinement (deduplicate, merge, quality-gate L2)
+memory refine
 
 # Import OpenClaw history
 memory import-openclaw
@@ -222,11 +262,13 @@ memory serve --host 0.0.0.0 --debug
 | `POST` | `/v1/recall` | Search memories |
 | `POST` | `/v1/remember` | Store a memory |
 | `POST` | `/v1/extract` | LLM-extract memories from text |
+| `POST` | `/v1/ingest` | Raw-first ingestion (stores transcript + extracts) |
 | `DELETE` | `/v1/forget/{id}` | Delete a memory |
 | `GET` | `/v1/review` | List memories by layer |
-| `GET/POST` | `/v1/status` | Layer statistics |
+| `GET/POST` | `/v1/status` | Layer and raw transcript statistics |
 | `POST` | `/v1/maintain` | Run maintenance |
 | `POST` | `/v1/sql` | Raw SQL (debug mode only) |
+| `POST` | `/hooks/claude-code` | Claude Code hook handler (auto recall/capture) |
 | `GET` | `/sse` | MCP SSE connection |
 | `POST` | `/messages/` | MCP message posting |
 
@@ -292,6 +334,30 @@ For remote (another machine running `memory serve`):
 }
 ```
 
+#### Claude Code Hooks — Automatic Recall & Capture
+
+`setup.sh` registers [HTTP hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) in `~/.claude/settings.json` that give Claude Code the same auto-recall/capture behavior as Cursor:
+
+- **`SessionStart`** — Recalls relevant memories and injects them as `additionalContext`
+- **`UserPromptSubmit`** — Buffers the user prompt for ingestion
+- **`Stop`** — Ingests each completed turn (stores raw transcript + extracts structured memories)
+- **`SessionEnd`** — Runs lightweight maintenance
+
+Hooks communicate directly with the ClickMem API server via HTTP POST to `http://127.0.0.1:9527/hooks/claude-code`. No external scripts needed — the server handles everything. All errors are fail-open; hooks never block Claude Code.
+
+To manually configure hooks (e.g. for a remote server), add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:9527/hooks/claude-code", "timeout": 30 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:9527/hooks/claude-code", "timeout": 30 }] }],
+    "Stop": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:9527/hooks/claude-code", "timeout": 30 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:9527/hooks/claude-code", "timeout": 30 }] }]
+  }
+}
+```
+
 #### Cursor Configuration
 
 Add to `.cursor/mcp.json` in your project:
@@ -324,7 +390,7 @@ For remote:
 `setup.sh` installs user-level Cursor hooks (`~/.cursor/hooks.json`) that work across **all** your Cursor projects:
 
 - **`sessionStart`** — Recalls relevant memories and injects them as context
-- **`afterAgentResponse`** — Extracts new memories from each conversation turn
+- **`afterAgentResponse`** — Ingests each conversation turn (stores raw transcript + extracts memories)
 - **`sessionEnd` / `stop`** — Runs lightweight maintenance
 
 Hooks communicate with the ClickMem API server on `localhost:9527`. All errors are fail-open — hooks never block Cursor.
@@ -336,9 +402,10 @@ Hooks communicate with the ClickMem API server on `localhost:9527`. All errors a
 | `clickmem_recall` | Search memories by semantic query |
 | `clickmem_remember` | Store a new memory |
 | `clickmem_extract` | Extract memories from conversation text |
+| `clickmem_ingest` | Raw-first ingestion: stores transcript + extracts memories |
 | `clickmem_forget` | Delete a memory |
-| `clickmem_status` | Show memory statistics |
-| `clickmem_working` | Get or set working memory (L0) |
+| `clickmem_status` | Show memory statistics (includes raw transcript counts) |
+| `clickmem_working` | Get or set working memory (deprecated) |
 
 ### LAN Discovery
 
@@ -357,11 +424,11 @@ memory discover
 | Runs locally | ✅ file | ❌ cloud API | ❌ cloud API | **✅ fully local** |
 | Privacy | ✅ | ❌ data sent to API | ❌ data sent to API | **✅ zero data leaves machine** |
 | Embeddings | N/A | Remote (costs $) | Remote (costs $) | **Local Qwen3 (free)** |
-| Memory layers | Flat file | Semantic + Episodic | Hierarchical | **3-layer (L0/L1/L2)** |
+| Memory layers | Flat file | Semantic + Episodic | Hierarchical | **Raw + L1 Episodic + L2 Semantic** |
 | Search | Keyword grep | Vector + Graph | Hybrid + Relations | **Vector + Keyword + MMR** |
 | Time decay | None | None | Smart forgetting | **Per-layer decay (exp + log)** |
 | Deduplication | Manual | LLM 4-op upsert | Relational versioning | **LLM 4-op upsert** |
-| Self-maintenance | Manual | ❌ | ❌ | **Auto (cleanup/compress/promote)** |
+| Self-maintenance | Manual | ❌ | ❌ | **Auto (cleanup/compress/promote/refine)** |
 | Multi-tool sharing | ❌ | Cloud only | Cloud only | **✅ LAN server + MCP** |
 | Access tracking | ❌ | ❌ | ✅ | **✅ popularity-weighted recall** |
 | Result diversity | ❌ | ❌ | ❌ | **✅ MMR re-ranking** |

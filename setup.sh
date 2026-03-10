@@ -82,7 +82,7 @@ uv run memory service install < /dev/null 2>&1 | sed 's/^/  /'
 echo "▸ Smoke test..."
 for i in 1 2 3 4 5 6; do
     if uv run memory status --json < /dev/null >/dev/null 2>&1; then
-        echo "  CLI works (via API server on port 9527)."
+        echo "  CLI works (via API server on port ${CLICKMEM_SERVER_PORT:-9527})."
         break
     fi
     if [ "$i" -eq 6 ]; then
@@ -159,6 +159,49 @@ if [ -d "$HOME/.claude" ]; then
     echo "  Skill linked: $CLAUDE_LINK → $SKILL_SRC"
 else
     echo "▸ No ~/.claude directory found, skipping Claude Code skill installation."
+fi
+
+# ── 7.5. Install Claude Code hooks (HTTP hooks for auto recall/capture) ──
+
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+if [ -d "$HOME/.claude" ]; then
+    echo "▸ Installing Claude Code hooks..."
+    python3 -c "
+import json, os
+
+settings_path = '$CLAUDE_SETTINGS'
+port = os.environ.get('CLICKMEM_SERVER_PORT', '9527')
+host = os.environ.get('CLICKMEM_SERVER_HOST', '127.0.0.1')
+url = f'http://{host}:{port}/hooks/claude-code'
+
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+else:
+    settings = {}
+
+hooks = settings.setdefault('hooks', {})
+hook_handler = {'type': 'http', 'url': url, 'timeout': 30}
+
+for event in ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']:
+    groups = hooks.get(event, [])
+    # Remove old clickmem entries (by URL pattern)
+    groups = [g for g in groups if not any(
+        '/hooks/claude-code' in h.get('url', '')
+        for h in g.get('hooks', [])
+    )]
+    groups.append({'hooks': [hook_handler]})
+    hooks[event] = groups
+
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+print('  Hooks registered in', settings_path)
+print('  Events: SessionStart, UserPromptSubmit, Stop, SessionEnd')
+print('  Endpoint:', url)
+" || echo "  Warning: failed to register Claude Code hooks"
+    echo "  Claude Code hooks enable auto-recall on session start and auto-capture after each response."
+else
+    echo "▸ No ~/.claude directory found, skipping Claude Code hooks installation."
 fi
 
 # OpenClaw: add skills/ to openclaw.json skills directories
@@ -252,7 +295,7 @@ echo "   memory service logs -f     # Follow server logs"
 echo "   memory service stop        # Stop the service"
 echo "   memory service start       # Start the service"
 echo ""
-echo " Skill: /clickmem available in Claude Code"
+echo " Claude Code: /clickmem skill + auto recall/capture hooks"
 echo ""
 echo " Cursor: hooks active globally (~/.cursor/hooks.json)"
 echo ""

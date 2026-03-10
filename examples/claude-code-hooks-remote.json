@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://192.168.1.100:9527/hooks/claude-code",
+            "timeout": 30,
+            "headers": {
+              "Authorization": "Bearer $CLICKMEM_API_KEY"
+            },
+            "allowedEnvVars": ["CLICKMEM_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://192.168.1.100:9527/hooks/claude-code",
+            "timeout": 30,
+            "headers": {
+              "Authorization": "Bearer $CLICKMEM_API_KEY"
+            },
+            "allowedEnvVars": ["CLICKMEM_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://192.168.1.100:9527/hooks/claude-code",
+            "timeout": 30,
+            "headers": {
+              "Authorization": "Bearer $CLICKMEM_API_KEY"
+            },
+            "allowedEnvVars": ["CLICKMEM_API_KEY"]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://192.168.1.100:9527/hooks/claude-code",
+            "timeout": 30,
+            "headers": {
+              "Authorization": "Bearer $CLICKMEM_API_KEY"
+            },
+            "allowedEnvVars": ["CLICKMEM_API_KEY"]
+          }
+        ]
+      }
+    ]
+  }
+}
