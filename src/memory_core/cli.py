@@ -161,6 +161,79 @@ def extract(
 
 
 @app.command()
+def ingest(
+    text: str = typer.Argument(..., help="Conversation text to ingest"),
+    session_id: str = typer.Option("", help="Session ID"),
+    source: str = typer.Option("cli", help="Source identifier (cursor, claude, openclaw, cli, import)"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Ingest raw conversation text: stores in raw_transcripts + extracts memories."""
+    t = _get_transport()
+    result = t.ingest(text=text, session_id=session_id, source=source)
+
+    if json_output:
+        typer.echo(json.dumps(result, default=str))
+    else:
+        raw_id = str(result.get("raw_id", "?"))[:8]
+        ids = result.get("extracted_ids", [])
+        console.print(
+            f"[green]✓[/green] Ingested raw_id={raw_id}, "
+            f"extracted {len(ids)} memories: {', '.join(str(i)[:8] for i in ids)}"
+        )
+
+
+@app.command()
+def refine(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be refined without executing"),
+    threshold: Optional[int] = typer.Option(None, "--threshold", help="Only run if unprocessed raw >= N"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Run continual refinement: deduplicate, merge, and quality-gate L2 memories."""
+    t = _get_transport()
+
+    if threshold is not None:
+        st = t.status()
+        raw = st.get("raw", {})
+        unprocessed = raw.get("unprocessed", 0)
+        if unprocessed < threshold:
+            if json_output:
+                typer.echo(json.dumps({"skipped": True, "unprocessed": unprocessed, "threshold": threshold}))
+            else:
+                console.print(f"Skipped: only {unprocessed} unprocessed raw (threshold={threshold})")
+            return
+
+    if dry_run:
+        st = t.status()
+        raw = st.get("raw", {})
+        console.print(f"[yellow]Dry run[/yellow]")
+        console.print(f"  Unprocessed raw: {raw.get('unprocessed', 0)}")
+        console.print(f"  L2 semantic: {st.get('counts', {}).get('semantic', 0)}")
+        return
+
+    from memory_core.refinement import ContinualRefinement
+    from memory_core.llm import get_llm_complete
+
+    llm = get_llm_complete()
+    if llm is None:
+        console.print("[red]Error: no LLM available for refinement[/red]")
+        raise typer.Exit(code=1)
+
+    from memory_core.db import MemoryDB
+    db = MemoryDB(_DB_PATH)
+    emb = _get_emb()
+    result = ContinualRefinement.run(db, emb, llm)
+
+    if json_output:
+        typer.echo(json.dumps(result, default=str))
+    else:
+        console.print(f"[green]✓[/green] Refinement complete:")
+        console.print(f"  Re-extracted:    {result.get('reextracted', 0)}")
+        console.print(f"  Clusters found:  {result.get('clusters_found', 0)}")
+        console.print(f"  Merged:          {result.get('merged', 0)}")
+        console.print(f"  Pruned:          {result.get('pruned', 0)}")
+
+
+@app.command()
 def recall(
     query: str = typer.Argument(..., help="Search query"),
     layer: Optional[str] = typer.Option(None, help="Filter by layer"),
@@ -283,11 +356,16 @@ def status(
         typer.echo(json.dumps(data))
         return
 
-    console.print(f"\nL0 Working    {counts.get('working', 0):>4} entries")
+    raw = data.get("raw", {})
+    console.print(f"\nL0 Working    {counts.get('working', 0):>4} entries  (deprecated)")
     console.print(f"L1 Episodic   {counts.get('episodic', 0):>4} entries")
     console.print(f"L2 Semantic   {counts.get('semantic', 0):>4} entries")
-    console.print(f"{'─' * 35}")
+    console.print(f"{'─' * 40}")
     console.print(f"Total         {total:>4} entries")
+    if raw:
+        console.print(f"\nRaw transcripts  {raw.get('total', 0):>4} total")
+        console.print(f"  Processed      {raw.get('processed', 0):>4}")
+        console.print(f"  Unprocessed    {raw.get('unprocessed', 0):>4}")
     console.print(f"\nLLM mode: {llm_info['mode']}")
     if llm_info.get("local_model"):
         backend = llm_info.get("local_backend", "not loaded")
@@ -366,8 +444,14 @@ app.add_typer(service_app)
 
 @service_app.command(name="install")
 def service_install(
-    host: str = typer.Option("0.0.0.0", "--host", "-H", help="Bind address (0.0.0.0 for LAN)"),
-    port: int = typer.Option(9527, "--port", "-p", help="HTTP port for the server"),
+    host: str = typer.Option(
+        os.environ.get("CLICKMEM_SERVER_HOST", "0.0.0.0"),
+        "--host", "-H", help="Bind address (0.0.0.0 for LAN). Env: CLICKMEM_SERVER_HOST",
+    ),
+    port: int = typer.Option(
+        int(os.environ.get("CLICKMEM_SERVER_PORT", "9527")),
+        "--port", "-p", help="HTTP port for the server. Env: CLICKMEM_SERVER_PORT",
+    ),
 ):
     """Install and start ClickMem as a background service."""
     from memory_core.service import install
@@ -466,8 +550,14 @@ def service_logs(
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind address (use 0.0.0.0 for LAN)"),
-    port: int = typer.Option(9527, "--port", "-p", help="HTTP port"),
+    host: str = typer.Option(
+        os.environ.get("CLICKMEM_SERVER_HOST", "127.0.0.1"),
+        "--host", "-H", help="Bind address (use 0.0.0.0 for LAN). Env: CLICKMEM_SERVER_HOST",
+    ),
+    port: int = typer.Option(
+        int(os.environ.get("CLICKMEM_SERVER_PORT", "9527")),
+        "--port", "-p", help="HTTP port. Env: CLICKMEM_SERVER_PORT",
+    ),
     debug: bool = typer.Option(False, "--debug", help="Enable /v1/sql endpoint"),
     no_mcp: bool = typer.Option(False, "--no-mcp", help="Disable MCP SSE on /sse (REST-only)"),
     no_mdns: bool = typer.Option(False, "--no-mdns", help="Disable mDNS registration"),
