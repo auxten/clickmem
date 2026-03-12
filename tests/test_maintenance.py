@@ -118,10 +118,12 @@ class TestPurgeDeleted:
         assert purged == 1
         assert db.get(m.id) is None
 
-    @freeze_time("2026-03-04")
     def test_preserves_recently_deleted(self, db):
-        """Recently soft-deleted entries are not purged."""
-        now = datetime(2026, 3, 4, tzinfo=timezone.utc)
+        """Recently soft-deleted entries are not purged.
+
+        Uses real current time because chDB's now() ignores freeze_time.
+        """
+        now = datetime.now(timezone.utc)
         m = make_memory(is_active=False, updated_at=now - timedelta(days=2))
         db.insert(m)
         purged = maintenance.purge_deleted(db, days=7)
