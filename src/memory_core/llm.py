@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Module-level singleton — loading a 2B model is expensive, do it once.
+# Module-level singleton — loading a model is expensive, do it once.
 _local_engine = None
 _local_engine_failed = False
+_local_engine_lock = threading.Lock()
 
 
 def get_llm_complete() -> Optional[Callable[[str], str]]:
@@ -85,18 +87,25 @@ def _get_local_complete() -> Optional[Callable[[str], str]]:
     if _local_engine_failed:
         return None
 
-    try:
-        from memory_core.local_llm import LocalLLMEngine
+    with _local_engine_lock:
+        # Double-check after acquiring lock
+        if _local_engine is not None:
+            return _local_engine.complete
+        if _local_engine_failed:
+            return None
 
-        engine = LocalLLMEngine()
-        engine.load()
-        _local_engine = engine
-        logger.info("Local LLM ready: %s (%s)", engine.model_name, engine.backend)
-        return engine.complete
-    except Exception as exc:
-        _local_engine_failed = True
-        logger.warning("Local LLM not available: %s", exc)
-        return None
+        try:
+            from memory_core.local_llm import LocalLLMEngine
+
+            engine = LocalLLMEngine()
+            engine.load()
+            _local_engine = engine
+            logger.info("Local LLM ready: %s (%s)", engine.model_name, engine.backend)
+            return engine.complete
+        except Exception as exc:
+            _local_engine_failed = True
+            logger.warning("Local LLM not available: %s", exc)
+            return None
 
 
 # ------------------------------------------------------------------
