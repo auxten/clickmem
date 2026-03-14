@@ -24,6 +24,7 @@ import logging
 import os
 import platform
 import re
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class LocalLLMEngine:
         self._max_tokens = max_tokens
         self._backend: str | None = None
         self._generate_fn = None
+        self._lock = threading.Lock()
 
     def load(self) -> None:
         """Load the model with GPU auto-detection."""
@@ -161,9 +163,13 @@ class LocalLLMEngine:
         return self._model_name or "none"
 
     def complete(self, prompt: str) -> str:
-        """Generate a completion for the given prompt."""
+        """Generate a completion for the given prompt.
+
+        MLX Metal backend is not thread-safe — serialize all inference calls.
+        """
         assert self._generate_fn is not None, "Call load() first"
-        raw = self._generate_fn(prompt)
+        with self._lock:
+            raw = self._generate_fn(prompt)
         return _strip_think_tags(raw).strip()
 
     # ------------------------------------------------------------------
