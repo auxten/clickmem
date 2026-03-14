@@ -218,12 +218,18 @@ class LocalTransport:
             llm = get_llm_complete()
             if llm is None:
                 return
+            # Phase 1: drain unprocessed backlog (extraction only, no heavy refinement)
             while True:
-                ContinualRefinement.run(db, emb, llm)
                 remaining = db.count_raw().get("unprocessed", 0)
                 if remaining == 0:
                     break
-                _log.info("Refinement: %d unprocessed remaining, continuing...", remaining)
+                _log.info("Refinement: extracting %d unprocessed raw transcripts...", remaining)
+                ContinualRefinement._dedup_exact_text(db)
+                extracted = ContinualRefinement._reextract_unprocessed(db, emb, llm)
+                _log.info("Refinement: extracted %d memories from batch", extracted)
+            # Phase 2: one full refinement pass (cluster/merge/prune)
+            _log.info("Refinement: backlog cleared, running full pipeline")
+            ContinualRefinement.run(db, emb, llm)
         except Exception as exc:
             _log.warning("Background refinement failed: %s", exc)
         finally:

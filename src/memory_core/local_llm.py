@@ -162,14 +162,22 @@ class LocalLLMEngine:
     def model_name(self) -> str:
         return self._model_name or "none"
 
+    _TIMEOUT = int(os.environ.get("CLICKMEM_LLM_TIMEOUT", "120"))
+
     def complete(self, prompt: str) -> str:
         """Generate a completion for the given prompt.
 
         MLX Metal backend is not thread-safe — serialize all inference calls.
+        Logs a warning if inference exceeds the timeout threshold.
         """
         assert self._generate_fn is not None, "Call load() first"
+        import time
         with self._lock:
+            t0 = time.monotonic()
             raw = self._generate_fn(prompt)
+            elapsed = time.monotonic() - t0
+            if elapsed > self._TIMEOUT:
+                logger.warning("LLM call took %.1fs (threshold %ds)", elapsed, self._TIMEOUT)
         return _strip_think_tags(raw).strip()
 
     # ------------------------------------------------------------------

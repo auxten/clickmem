@@ -182,6 +182,8 @@ class ContinualRefinement:
 
         return clusters
 
+    _MAX_PAIRWISE_PER_CLUSTER = 10
+
     @staticmethod
     def _refine_clusters(
         db: "MemoryDB",
@@ -194,9 +196,12 @@ class ContinualRefinement:
 
         for cluster in clusters:
             duplicates = []
+            pair_count = 0
 
             for i in range(len(cluster)):
                 for j in range(i + 1, len(cluster)):
+                    if pair_count >= ContinualRefinement._MAX_PAIRWISE_PER_CLUSTER:
+                        break
                     prompt = _DEDUP_PROMPT.format(
                         mem_a=cluster[i].content,
                         mem_b=cluster[j].content,
@@ -208,6 +213,9 @@ class ContinualRefinement:
                             duplicates.append((i, j))
                     except Exception:
                         continue
+                    pair_count += 1
+                if pair_count >= ContinualRefinement._MAX_PAIRWISE_PER_CLUSTER:
+                    break
 
             if not duplicates:
                 continue
