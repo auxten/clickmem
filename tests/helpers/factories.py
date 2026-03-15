@@ -1,6 +1,6 @@
-"""Factory helpers for creating Memory instances in tests.
+"""Factory helpers for creating Memory / CEO-entity instances in tests.
 
-Provides MemoryFactory class and convenience make_memory() function.
+Provides MemoryFactory class, CEO entity factories, and convenience functions.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from memory_core.models import Memory
+from memory_core.models import Decision, Episode, Memory, Principle, Project
 
 
 class MemoryFactory:
@@ -140,3 +140,251 @@ def seed_with_repeated_tag(tag: str, count: int = 4) -> list[Memory]:
         )
         for i in range(count)
     ]
+
+
+# ---------------------------------------------------------------------------
+# CEO entity factories
+# ---------------------------------------------------------------------------
+
+class ProjectFactory:
+    _counter = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._counter = 0
+
+    @classmethod
+    def build(cls, **overrides) -> Project:
+        cls._counter += 1
+        now = datetime.now(timezone.utc)
+        defaults = {
+            "id": str(uuid.uuid4()),
+            "name": f"Project {cls._counter}",
+            "description": f"Test project #{cls._counter}",
+            "status": "building",
+            "vision": "Build something great",
+            "target_users": "developers",
+            "north_star_metric": "weekly active users",
+            "tech_stack": ["python", "chdb"],
+            "repo_url": f"/home/user/project{cls._counter}",
+            "related_files": [],
+            "metadata": "",
+            "embedding": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        defaults.update(overrides)
+        return Project(**defaults)
+
+
+class DecisionFactory:
+    _counter = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._counter = 0
+
+    @classmethod
+    def build(cls, **overrides) -> Decision:
+        cls._counter += 1
+        now = datetime.now(timezone.utc)
+        defaults = {
+            "id": str(uuid.uuid4()),
+            "project_id": "",
+            "title": f"Decision #{cls._counter}",
+            "context": f"Context for decision {cls._counter}",
+            "choice": f"Choice {cls._counter}",
+            "reasoning": f"Because of reason {cls._counter}",
+            "alternatives": "",
+            "outcome": "",
+            "outcome_status": "pending",
+            "domain": "tech",
+            "tags": [f"tag{cls._counter}"],
+            "source_episodes": [],
+            "embedding": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        defaults.update(overrides)
+        return Decision(**defaults)
+
+
+class PrincipleFactory:
+    _counter = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._counter = 0
+
+    @classmethod
+    def build(cls, **overrides) -> Principle:
+        cls._counter += 1
+        now = datetime.now(timezone.utc)
+        defaults = {
+            "id": str(uuid.uuid4()),
+            "project_id": "",
+            "content": f"Principle #{cls._counter}",
+            "domain": "tech",
+            "confidence": 0.5,
+            "evidence_count": 1,
+            "source_decisions": [],
+            "embedding": None,
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+        defaults.update(overrides)
+        return Principle(**defaults)
+
+
+class EpisodeFactory:
+    _counter = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._counter = 0
+
+    @classmethod
+    def build(cls, **overrides) -> Episode:
+        cls._counter += 1
+        now = datetime.now(timezone.utc)
+        defaults = {
+            "id": str(uuid.uuid4()),
+            "project_id": "",
+            "session_id": f"session-{cls._counter}",
+            "agent_source": "claude_code",
+            "content": f"Episode #{cls._counter}: user worked on feature",
+            "user_intent": f"Implement feature {cls._counter}",
+            "key_outcomes": [f"outcome-{cls._counter}"],
+            "domain": "tech",
+            "tags": [f"tag{cls._counter}"],
+            "entities": [],
+            "raw_id": "",
+            "embedding": None,
+            "created_at": now,
+        }
+        defaults.update(overrides)
+        return Episode(**defaults)
+
+
+def seed_projects(count: int = 2) -> list[Project]:
+    """Create seed projects."""
+    projects = [
+        ProjectFactory.build(
+            name="ClickMem",
+            description="AI coding assistant memory enhancement",
+            status="building",
+            tech_stack=["python", "chdb", "fastapi"],
+            repo_url="/home/user/clickmem",
+        ),
+        ProjectFactory.build(
+            name="OpenClaw",
+            description="Open-source AI agent framework",
+            status="ideation",
+            tech_stack=["python", "asyncio"],
+            repo_url="/home/user/openclaw",
+        ),
+    ]
+    return projects[:count]
+
+
+def seed_decisions(count: int = 3, project_id: str = "") -> list[Decision]:
+    """Create seed decisions."""
+    items = [
+        DecisionFactory.build(
+            project_id=project_id,
+            title="Choose chDB over sqlite-vec",
+            context="Needed embedded vector DB",
+            choice="chDB",
+            reasoning="Better SQL support, ClickHouse ecosystem",
+            domain="tech",
+        ),
+        DecisionFactory.build(
+            project_id=project_id,
+            title="Use Qwen3 embeddings",
+            context="Need local embedding model",
+            choice="Qwen/Qwen3-Embedding-0.6B",
+            reasoning="Small, fast, good quality",
+            domain="tech",
+        ),
+        DecisionFactory.build(
+            project_id=project_id,
+            title="Local-first architecture",
+            context="Privacy and latency concerns",
+            choice="All processing on-device",
+            reasoning="CEO owns their data",
+            domain="product",
+        ),
+    ]
+    return items[:count]
+
+
+def seed_principles(count: int = 3, project_id: str = "") -> list[Principle]:
+    """Create seed principles."""
+    items = [
+        PrincipleFactory.build(
+            project_id=project_id,
+            content="Local-first: avoid cloud dependencies for core features",
+            domain="product",
+            confidence=0.8,
+            evidence_count=5,
+        ),
+        PrincipleFactory.build(
+            project_id=project_id,
+            content="Quality of extraction matters more than quantity",
+            domain="tech",
+            confidence=0.7,
+            evidence_count=3,
+        ),
+        PrincipleFactory.build(
+            project_id=project_id,
+            content="Keep the API surface small and composable",
+            domain="tech",
+            confidence=0.6,
+            evidence_count=2,
+        ),
+    ]
+    return items[:count]
+
+
+def seed_episodes(count: int = 5, project_id: str = "") -> list[Episode]:
+    """Create seed episodes."""
+    now = datetime.now(timezone.utc)
+    items = [
+        EpisodeFactory.build(
+            project_id=project_id,
+            content="Implemented chDB storage layer with ReplacingMergeTree",
+            user_intent="Set up database layer",
+            key_outcomes=["MemoryDB class created", "CRUD operations working"],
+            created_at=now - timedelta(days=0),
+        ),
+        EpisodeFactory.build(
+            project_id=project_id,
+            content="Added embedding support with Qwen3",
+            user_intent="Enable semantic search",
+            key_outcomes=["EmbeddingEngine working", "Vector search functional"],
+            created_at=now - timedelta(days=1),
+        ),
+        EpisodeFactory.build(
+            project_id=project_id,
+            content="Built extraction pipeline with LLM",
+            user_intent="Auto-extract memories from conversations",
+            key_outcomes=["Extractor class done", "Multi-type extraction"],
+            created_at=now - timedelta(days=2),
+        ),
+        EpisodeFactory.build(
+            project_id=project_id,
+            content="Debugged hook integration with Claude Code",
+            user_intent="Fix session lifecycle",
+            key_outcomes=["Hooks working end-to-end"],
+            created_at=now - timedelta(days=3),
+        ),
+        EpisodeFactory.build(
+            project_id=project_id,
+            content="Designed CEO Brain architecture",
+            user_intent="Plan system redesign",
+            key_outcomes=["PLAN-CEO-BRAIN.md written"],
+            created_at=now - timedelta(days=4),
+        ),
+    ]
+    return items[:count]

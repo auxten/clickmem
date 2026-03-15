@@ -23,10 +23,18 @@ from memory_core.models import Memory, RetrievalConfig
 from tests.helpers.mock_embedding import MockEmbeddingEngine
 from tests.helpers.mock_llm import MockLLMComplete
 from tests.helpers.factories import (
+    DecisionFactory,
+    EpisodeFactory,
     MemoryFactory,
-    seed_working,
+    PrincipleFactory,
+    ProjectFactory,
+    seed_decisions,
+    seed_episodes,
     seed_episodic,
+    seed_principles,
+    seed_projects,
     seed_semantic,
+    seed_working,
 )
 
 
@@ -107,6 +115,45 @@ def retrieval_config():
     )
 
 
+# ---------------------------------------------------------------------------
+# CEO Brain fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def ceo_db():
+    """Create a fresh CeoDB instance (in-memory, isolated via TRUNCATE)."""
+    from memory_core.ceo_db import CeoDB
+
+    instance = CeoDB(":memory:")
+    instance._truncate()
+    return instance
+
+
+@pytest.fixture
+def populated_ceo_db(ceo_db, mock_emb):
+    """CeoDB pre-populated with projects, decisions, principles, episodes."""
+    projects = seed_projects(2)
+    for p in projects:
+        p.embedding = mock_emb.encode_document(p.name + " " + p.description)
+        ceo_db.insert_project(p)
+
+    project_id = projects[0].id
+
+    for d in seed_decisions(3, project_id=project_id):
+        d.embedding = mock_emb.encode_document(d.title + " " + d.choice)
+        ceo_db.insert_decision(d)
+
+    for p in seed_principles(3, project_id=project_id):
+        p.embedding = mock_emb.encode_document(p.content)
+        ceo_db.insert_principle(p)
+
+    for e in seed_episodes(5, project_id=project_id):
+        e.embedding = mock_emb.encode_document(e.content)
+        ceo_db.insert_episode(e)
+
+    return ceo_db
+
+
 _shared_cli_transport = None
 
 
@@ -137,6 +184,10 @@ def _reset_factory():
     the embedding engine is reused to avoid reloading the model every time.
     """
     MemoryFactory.reset()
+    ProjectFactory.reset()
+    DecisionFactory.reset()
+    PrincipleFactory.reset()
+    EpisodeFactory.reset()
     shared_t = _get_shared_cli_transport()
     shared_t._get_db()._truncate()
     import memory_core.cli as cli_mod

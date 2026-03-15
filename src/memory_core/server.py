@@ -325,41 +325,31 @@ async def claude_code_hook(request: Request):
 
 
 async def _cc_session_start(payload: dict) -> dict:
-    """Recall relevant memories and inject them as additionalContext."""
-    from memory_core.models import RetrievalConfig
+    """Build CEO context and inject as additionalContext."""
+    from memory_core.context_engine import build_ceo_context
+    from memory_core.project_detect import detect_project
 
     cwd = payload.get("cwd", "")
-    workspace_name = os.path.basename(cwd) if cwd else ""
-    query = f"{workspace_name} recent work context" if workspace_name else "recent work context"
 
     t = _get_transport()
-    results = await asyncio.to_thread(
-        t.recall, query,
-        cfg=RetrievalConfig(top_k=_CC_RECALL_TOP_K),
-        min_score=_CC_RECALL_MIN_SCORE,
+    ceo_db = t._get_ceo_db()
+    emb = t._get_emb()
+
+    project_id = await asyncio.to_thread(
+        detect_project, ceo_db, cwd=cwd, emb=emb,
     )
 
-    if not results:
+    context = await asyncio.to_thread(
+        build_ceo_context, ceo_db, emb,
+        project_id=project_id, agent_source="claude_code",
+    )
+
+    if not context or not context.strip():
         return {}
 
-    lines = []
-    for r in results:
-        score = round(r.get("final_score", 0) * 100)
-        short_id = r.get("id", "")[:8]
-        layer = r.get("layer", "")
-        category = r.get("category", "")
-        content = r["content"]
-        lines.append(f"- [id:{short_id}] [{layer}/{category}] {content} ({score}%)")
-
-    context = "\n".join([
-        "<clickmem-context>",
-        "Background from long-term memory. Use silently unless directly relevant.",
-        "",
-        *lines,
-        "</clickmem-context>",
-    ])
-
-    _log.info("claude-code SessionStart: injected %d memories for %s", len(results), workspace_name)
+    workspace_name = os.path.basename(cwd) if cwd else ""
+    _log.info("claude-code SessionStart: injected CEO context for %s (project=%s)",
+              workspace_name, project_id[:8] if project_id else "none")
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -403,16 +393,19 @@ async def _cc_stop(payload: dict) -> dict:
     if len(turn_text) < 40:
         return {}
 
+    cwd = payload.get("cwd", "")
     t = _get_transport()
     try:
         result = await asyncio.to_thread(
-            t.ingest, text=turn_text, session_id=session_id, source="claude",
+            t.ingest, text=turn_text, session_id=session_id,
+            source="claude_code", cwd=cwd,
         )
-        ids = result.get("extracted_ids", [])
         raw_id = result.get("raw_id", "")
+        ep_count = len(result.get("episodes", []))
+        dec_count = len(result.get("decisions", []))
         _log.info(
-            "claude-code Stop: ingested raw_id=%s, extracted %d memories from %d chars",
-            raw_id[:8] if raw_id else "?", len(ids), len(turn_text),
+            "claude-code Stop: ingested raw_id=%s, %d episodes, %d decisions from %d chars",
+            raw_id[:8] if raw_id else "?", ep_count, dec_count, len(turn_text),
         )
     except Exception as exc:
         _log.debug("claude-code Stop ingest failed: %s", exc)

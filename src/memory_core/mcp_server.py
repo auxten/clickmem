@@ -23,8 +23,6 @@ from mcp.types import (
     Resource,
 )
 
-from memory_core.models import RetrievalConfig
-
 _log = logging.getLogger("clickmem.mcp")
 
 server = Server("clickmem")
@@ -53,7 +51,7 @@ def _json_text(data: Any) -> list[TextContent]:
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# Tools — CEO Brain capabilities
 # ---------------------------------------------------------------------------
 
 
@@ -61,107 +59,74 @@ def _json_text(data: Any) -> list[TextContent]:
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="clickmem_recall",
-            description="Search memories by semantic query. Returns relevant memories ranked by score.",
+            name="ceo_brief",
+            description="Get a detailed briefing on a project: principles, decisions, recent activity, and optionally search for specific topics.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "top_k": {"type": "integer", "description": "Max results (default: 10)", "default": 10},
-                    "min_score": {"type": "number", "description": "Minimum score threshold (default: 0.0)", "default": 0.0},
-                    "layer": {"type": "string", "description": "Filter by layer: episodic, semantic, or null for all", "enum": ["episodic", "semantic"]},
-                    "category": {"type": "string", "description": "Filter by category"},
-                    "max_content_length": {"type": "integer", "description": "Truncate content to this many chars (default: 800, 0=no limit)", "default": 800},
-                    "since": {"type": "string", "description": "ISO-8601 datetime — only return memories created at or after this time (e.g. '2026-03-12T10:00:00Z')"},
-                    "until": {"type": "string", "description": "ISO-8601 datetime — only return memories created at or before this time"},
+                    "project_id": {"type": "string", "description": "Project ID (empty for all)"},
+                    "query": {"type": "string", "description": "Optional search query within the project"},
                 },
-                "required": ["query"],
             },
         ),
         Tool(
-            name="clickmem_remember",
-            description="Store a new memory. Use layer='semantic' for long-term facts, 'episodic' for events, 'working' for current focus.",
+            name="ceo_decide",
+            description="Get decision support with historical context. Finds related past decisions and principles, optionally provides LLM recommendation.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "Memory content to store"},
-                    "layer": {"type": "string", "description": "Memory layer", "enum": ["working", "episodic", "semantic"], "default": "semantic"},
-                    "category": {"type": "string", "description": "Category", "default": "knowledge"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags", "default": []},
-                    "no_upsert": {"type": "boolean", "description": "Skip dedup, force insert", "default": False},
+                    "question": {"type": "string", "description": "The decision question"},
+                    "options": {"type": "array", "items": {"type": "string"}, "description": "Available options"},
+                    "context": {"type": "string", "description": "Additional context"},
+                    "project_id": {"type": "string", "description": "Project ID"},
                 },
-                "required": ["content"],
+                "required": ["question"],
             },
         ),
         Tool(
-            name="clickmem_extract",
-            description="Extract structured memories from conversation text using LLM analysis.",
+            name="ceo_remember",
+            description="Store a structured CEO memory (decision, principle, or episode) with proper categorization.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Conversation text to extract from"},
-                    "session_id": {"type": "string", "description": "Session ID", "default": ""},
+                    "type": {"type": "string", "enum": ["decision", "principle", "episode"],
+                             "description": "Entity type to store"},
+                    "content": {"type": "object", "description": "Entity-specific fields"},
+                    "project_id": {"type": "string", "description": "Project ID"},
                 },
-                "required": ["text"],
+                "required": ["type", "content"],
             },
         ),
         Tool(
-            name="clickmem_forget",
-            description="Delete a memory by ID, UUID prefix, or content search.",
+            name="ceo_review",
+            description="Check a proposed plan against CEO principles and past decisions for consistency.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "id_or_content": {"type": "string", "description": "Memory ID, prefix, or content description"},
+                    "proposed_plan": {"type": "string", "description": "The plan to review"},
+                    "project_id": {"type": "string", "description": "Project ID"},
                 },
-                "required": ["id_or_content"],
+                "required": ["proposed_plan"],
             },
         ),
         Tool(
-            name="clickmem_status",
-            description="Show memory statistics: counts per layer and total.",
+            name="ceo_retro",
+            description="Run a retrospective for a project: summarise decisions, identify validated/invalidated ones, suggest new principles.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID"},
+                    "time_range": {"type": "string", "description": "Time range (e.g. 'last 30 days')"},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="ceo_portfolio",
+            description="Get overview of all active projects with recent activity summary and entity counts.",
             inputSchema={
                 "type": "object",
                 "properties": {},
-            },
-        ),
-        Tool(
-            name="clickmem_ingest",
-            description="Ingest raw conversation text: stores full text in raw_transcripts, then extracts structured memories to L1/L2. Preferred over extract for new data.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Full conversation text to ingest"},
-                    "session_id": {"type": "string", "description": "Session ID", "default": ""},
-                    "source": {"type": "string", "description": "Source identifier", "default": "mcp",
-                               "enum": ["cursor", "claude", "openclaw", "mcp", "import"]},
-                },
-                "required": ["text"],
-            },
-        ),
-        Tool(
-            name="clickmem_working",
-            description="[Deprecated] Get or set working memory (L0). Agents typically manage their own session context. Omit 'content' to read current value.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "New working memory content (omit to read)"},
-                },
-            },
-        ),
-        Tool(
-            name="clickmem_list",
-            description="Browse and list memories with optional filtering, pagination, and sorting. Unlike recall (semantic search), this returns memories in chronological order. Use for 'show all memories', 'recent memories', or browsing by layer/category.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "layer": {"type": "string", "description": "Filter by layer", "enum": ["episodic", "semantic"]},
-                    "category": {"type": "string", "description": "Filter by category (e.g. preference, person, project, knowledge)"},
-                    "limit": {"type": "integer", "description": "Max results (default: 20)", "default": 20},
-                    "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-                    "sort_by": {"type": "string", "description": "Sort field", "enum": ["created_at", "accessed_at", "updated_at", "access_count"], "default": "created_at"},
-                    "since": {"type": "string", "description": "ISO-8601 datetime — only show memories created at or after this time"},
-                    "until": {"type": "string", "description": "ISO-8601 datetime — only show memories created at or before this time"},
-                },
             },
         ),
     ]
@@ -170,98 +135,64 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t = _get_transport()
+    ceo_db = t._get_ceo_db()
+    emb = t._get_emb()
 
-    if name == "clickmem_recall":
-        cfg = RetrievalConfig(
-            top_k=arguments.get("top_k", 10),
-            layer=arguments.get("layer"),
-            category=arguments.get("category"),
-            since=arguments.get("since"),
-            until=arguments.get("until"),
-        )
-        results = await asyncio.to_thread(
-            t.recall, arguments["query"], cfg=cfg,
-            min_score=arguments.get("min_score", 0.0),
-        )
-        if not results:
-            return [TextContent(type="text", text="No matching memories found.")]
-        max_len = arguments.get("max_content_length", 800)
-        lines = []
-        for r in results:
-            score = r.get("final_score", 0)
-            content = r["content"]
-            if max_len and len(content) > max_len:
-                content = content[:max_len] + "… [truncated]"
-            lines.append(f"[{r['layer']}/{r.get('category', '')}] (score={score:.2f}) {content}")
-        return [TextContent(type="text", text="\n".join(lines))]
+    from memory_core.llm import get_llm_complete
+    llm = get_llm_complete()
 
-    if name == "clickmem_remember":
+    if name == "ceo_brief":
+        from memory_core.ceo_skills import ceo_brief
         result = await asyncio.to_thread(
-            t.remember,
+            ceo_brief, ceo_db, emb,
+            project_id=arguments.get("project_id", ""),
+            query=arguments.get("query", ""),
+        )
+        return _json_text(result)
+
+    if name == "ceo_decide":
+        from memory_core.ceo_skills import ceo_decide
+        result = await asyncio.to_thread(
+            ceo_decide, ceo_db, emb, llm,
+            question=arguments["question"],
+            options=arguments.get("options"),
+            context=arguments.get("context", ""),
+            project_id=arguments.get("project_id", ""),
+        )
+        return _json_text(result)
+
+    if name == "ceo_remember":
+        from memory_core.ceo_skills import ceo_remember
+        result = await asyncio.to_thread(
+            ceo_remember, ceo_db, emb,
+            entity_type=arguments["type"],
             content=arguments["content"],
-            layer=arguments.get("layer", "semantic"),
-            category=arguments.get("category", "knowledge"),
-            tags=arguments.get("tags", []),
-            no_upsert=arguments.get("no_upsert", False),
+            project_id=arguments.get("project_id", ""),
         )
         return _json_text(result)
 
-    if name == "clickmem_extract":
-        ids = await asyncio.to_thread(
-            t.extract,
-            text=arguments["text"],
-            session_id=arguments.get("session_id", ""),
-        )
-        return _json_text({"extracted": len(ids), "ids": ids})
-
-    if name == "clickmem_ingest":
+    if name == "ceo_review":
+        from memory_core.ceo_skills import ceo_review
         result = await asyncio.to_thread(
-            t.ingest,
-            text=arguments["text"],
-            session_id=arguments.get("session_id", ""),
-            source=arguments.get("source", "mcp"),
+            ceo_review, ceo_db, emb, llm,
+            proposed_plan=arguments["proposed_plan"],
+            project_id=arguments.get("project_id", ""),
         )
         return _json_text(result)
 
-    if name == "clickmem_forget":
-        result = await asyncio.to_thread(t.forget, arguments["id_or_content"])
+    if name == "ceo_retro":
+        from memory_core.ceo_skills import ceo_retro
+        result = await asyncio.to_thread(
+            ceo_retro, ceo_db, emb, llm,
+            project_id=arguments["project_id"],
+            time_range=arguments.get("time_range", ""),
+        )
         return _json_text(result)
 
-    if name == "clickmem_status":
-        return _json_text(await asyncio.to_thread(t.status))
-
-    if name == "clickmem_working":
-        content = arguments.get("content")
-        if content is not None:
-            result = await asyncio.to_thread(t.remember, content=content, layer="working")
-            return _json_text(result)
-        working = await asyncio.to_thread(t.review, layer="working")
-        if working:
-            return [TextContent(type="text", text=str(working))]
-        return [TextContent(type="text", text="No working memory set.")]
-
-    if name == "clickmem_list":
-        memories = await asyncio.to_thread(
-            t.list_memories,
-            layer=arguments.get("layer"),
-            category=arguments.get("category"),
-            limit=arguments.get("limit", 20),
-            offset=arguments.get("offset", 0),
-            sort_by=arguments.get("sort_by", "created_at"),
-            since=arguments.get("since"),
-            until=arguments.get("until"),
-        )
-        if not memories:
-            return [TextContent(type="text", text="No memories found.")]
-        lines = []
-        for m in memories:
-            if hasattr(m, "content"):
-                ts = m.created_at.strftime("%Y-%m-%d %H:%M") if m.created_at else "?"
-                lines.append(f"[{ts}] [{m.layer}/{m.category}] {m.content}")
-            else:
-                ts = m.get("created_at", "?")
-                lines.append(f"[{ts}] [{m.get('layer', '')}/{m.get('category', '')}] {m.get('content', '')}")
-        return [TextContent(type="text", text=f"Found {len(memories)} memories:\n\n" + "\n".join(lines))]
+    if name == "ceo_portfolio":
+        from memory_core.ceo_skills import ceo_portfolio
+        result = await asyncio.to_thread(ceo_portfolio, ceo_db, emb)
+        return _json_text(result)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -276,15 +207,9 @@ async def list_resources() -> list[Resource]:
     return [
         Resource(
             uri="clickmem://status",
-            name="Memory Status",
-            description="Current memory layer counts and statistics",
+            name="CEO Brain Status",
+            description="Current entity counts and statistics",
             mimeType="application/json",
-        ),
-        Resource(
-            uri="clickmem://working",
-            name="Working Memory",
-            description="Current L0 working memory content",
-            mimeType="text/plain",
         ),
     ]
 
@@ -296,10 +221,6 @@ async def read_resource(uri: str) -> str:
     if str(uri) == "clickmem://status":
         data = await asyncio.to_thread(t.status)
         return json.dumps(data, default=str, ensure_ascii=False)
-
-    if str(uri) == "clickmem://working":
-        working = await asyncio.to_thread(t.review, layer="working")
-        return str(working) if working else "(empty)"
 
     raise ValueError(f"Unknown resource: {uri}")
 

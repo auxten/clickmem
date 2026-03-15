@@ -54,6 +54,20 @@ class MockLLMComplete:
             if keyword.lower() in prompt_lower:
                 return response
 
+        # CEO Brain keyword routing
+        if "ceo" in prompt_lower and "extract" in prompt_lower:
+            return self._ceo_extract_response()
+        elif "decision" in prompt_lower and "judge" in prompt_lower:
+            return self._ceo_dedup_decision_response()
+        elif "principle" in prompt_lower and ("contradict" in prompt_lower or "similar" in prompt_lower):
+            return self._ceo_dedup_principle_response()
+        elif "retrospective" in prompt_lower or "retro" in prompt_lower:
+            return self._ceo_retro_response()
+        elif "consistency" in prompt_lower or "review" in prompt_lower and "plan" in prompt_lower:
+            return self._ceo_review_response()
+        elif "recommend" in prompt_lower and "decision" in prompt_lower:
+            return self._ceo_decide_response()
+
         # Default keyword routing
         if "extract" in prompt_lower:
             return self._extract_response()
@@ -129,6 +143,70 @@ class MockLLMComplete:
                 "entities": ["User"],
             },
         ])
+
+    # -- CEO Brain responses ------------------------------------------------
+
+    @staticmethod
+    def _ceo_extract_response() -> str:
+        return json.dumps([
+            {
+                "type": "episode",
+                "content": "Implemented new database schema",
+                "user_intent": "Set up CEO Brain storage",
+                "key_outcomes": ["CeoDB class created"],
+                "domain": "tech",
+                "tags": ["database"],
+                "entities": ["chDB"],
+            },
+            {
+                "type": "decision",
+                "title": "Use ReplacingMergeTree for projects",
+                "context": "Need upsert semantics",
+                "choice": "ReplacingMergeTree",
+                "reasoning": "Supports versioned updates without mutations",
+                "alternatives": "MergeTree + ALTER",
+                "domain": "tech",
+            },
+            {
+                "type": "principle",
+                "content": "Prefer append-only storage patterns",
+                "domain": "tech",
+                "confidence": 0.7,
+            },
+        ])
+
+    @staticmethod
+    def _ceo_dedup_decision_response() -> str:
+        return json.dumps({"action": "ADD", "reason": "New decision"})
+
+    @staticmethod
+    def _ceo_dedup_principle_response() -> str:
+        return json.dumps({"action": "ADD", "reason": "Distinct principle"})
+
+    @staticmethod
+    def _ceo_retro_response() -> str:
+        return json.dumps({
+            "summary": "Good progress on infrastructure",
+            "validated": ["chDB choice working well"],
+            "invalidated": [],
+            "principle_candidates": ["Local-first approach validated"],
+        })
+
+    @staticmethod
+    def _ceo_review_response() -> str:
+        return json.dumps({
+            "consistent": True,
+            "conflicts": [],
+            "suggestions": ["Consider adding caching"],
+        })
+
+    @staticmethod
+    def _ceo_decide_response() -> str:
+        return json.dumps({
+            "recommendation": "Option A is consistent with past decisions",
+            "confidence": 0.8,
+            "reasoning": "Based on similar past decisions",
+        })
 
     @staticmethod
     def _default_response() -> str:
