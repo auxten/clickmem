@@ -121,8 +121,8 @@ class TestIngestFlow:
         result = t.ingest("user: Hello\nassistant: Hi there", session_id="s1", source="cursor")
 
         assert "raw_id" in result
-        assert "extracted_ids" in result
-        assert len(result["extracted_ids"]) >= 1
+        assert "episodes" in result
+        assert len(result["episodes"]) >= 1
 
         raw = db.get_raw(result["raw_id"])
         assert raw is not None

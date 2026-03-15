@@ -818,3 +818,187 @@ def uninstall(
             console.print("  chDB data removed.")
         if result["exported_workspaces"]:
             console.print(f"  Memories exported to {len(result['exported_workspaces'])} workspace(s).")
+
+
+# ---------------------------------------------------------------------------
+# CEO Brain commands
+# ---------------------------------------------------------------------------
+
+
+def _get_ceo_db():
+    t = _get_transport()
+    return t._get_ceo_db()
+
+
+@app.command(name="portfolio")
+def portfolio_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show all projects overview."""
+    from memory_core.ceo_skills import ceo_portfolio
+    t = _get_transport()
+    ceo_db = t._get_ceo_db()
+    emb = t._get_emb()
+    result = ceo_portfolio(ceo_db, emb)
+
+    if json_output:
+        typer.echo(json.dumps(result, default=str))
+        return
+
+    projects = result.get("projects", [])
+    if not projects:
+        console.print("[dim]No projects found.[/dim]")
+        return
+
+    table = Table(title="CEO Portfolio")
+    table.add_column("Name", style="bold")
+    table.add_column("Status")
+    table.add_column("Decisions")
+    table.add_column("Episodes")
+    table.add_column("Latest Activity")
+
+    for p in projects:
+        table.add_row(
+            p["name"], p["status"],
+            str(p["recent_decisions"]), str(p["recent_episodes"]),
+            p.get("latest_activity", "")[:60],
+        )
+    console.print(table)
+
+    totals = result.get("totals", {})
+    if totals:
+        console.print(f"\n[dim]Totals: {totals}[/dim]")
+
+
+@app.command(name="brief")
+def brief_cmd(
+    project_id: str = typer.Option("", "--project-id", "-p", help="Project ID"),
+    query: str = typer.Option("", "--query", "-q", help="Search query"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Get a detailed project briefing."""
+    from memory_core.ceo_skills import ceo_brief
+    t = _get_transport()
+    ceo_db = t._get_ceo_db()
+    emb = t._get_emb()
+    result = ceo_brief(ceo_db, emb, project_id=project_id, query=query)
+
+    if json_output:
+        typer.echo(json.dumps(result, default=str))
+        return
+
+    if "project" in result:
+        p = result["project"]
+        console.print(f"\n[bold]{p['name']}[/bold] ({p['status']})")
+        if p.get("description"):
+            console.print(f"  {p['description']}")
+
+    if result.get("principles"):
+        console.print("\n[bold]Principles:[/bold]")
+        for p in result["principles"][:5]:
+            console.print(f"  [{p['confidence']:.0%}] {p['content']}")
+
+    if result.get("decisions"):
+        console.print("\n[bold]Recent Decisions:[/bold]")
+        for d in result["decisions"][:5]:
+            console.print(f"  - {d['title']}: {d['choice']}")
+
+    if result.get("recent_activity"):
+        console.print("\n[bold]Recent Activity:[/bold]")
+        for a in result["recent_activity"][:3]:
+            console.print(f"  - {a['content'][:80]}")
+
+
+@app.command(name="projects")
+def projects_cmd(
+    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List all projects."""
+    ceo_db = _get_ceo_db()
+    projects = ceo_db.list_projects(status=status_filter)
+
+    if json_output:
+        typer.echo(json.dumps([{
+            "id": p.id, "name": p.name, "status": p.status,
+            "description": p.description[:100],
+        } for p in projects], default=str))
+        return
+
+    if not projects:
+        console.print("[dim]No projects found.[/dim]")
+        return
+
+    table = Table(title="Projects")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", style="bold")
+    table.add_column("Status")
+    table.add_column("Description")
+
+    for p in projects:
+        table.add_row(p.id[:8], p.name, p.status, p.description[:60])
+    console.print(table)
+
+
+@app.command(name="decisions")
+def decisions_cmd(
+    project_id: Optional[str] = typer.Option(None, "--project-id", "-p", help="Filter by project"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List decisions."""
+    ceo_db = _get_ceo_db()
+    decisions = ceo_db.list_decisions(project_id=project_id, limit=limit)
+
+    if json_output:
+        typer.echo(json.dumps([{
+            "id": d.id, "title": d.title, "choice": d.choice,
+            "outcome_status": d.outcome_status, "domain": d.domain,
+        } for d in decisions], default=str))
+        return
+
+    if not decisions:
+        console.print("[dim]No decisions found.[/dim]")
+        return
+
+    table = Table(title="Decisions")
+    table.add_column("ID", style="dim")
+    table.add_column("Title", style="bold")
+    table.add_column("Choice")
+    table.add_column("Status")
+    table.add_column("Domain")
+
+    for d in decisions:
+        table.add_row(d.id[:8], d.title, d.choice[:40], d.outcome_status, d.domain)
+    console.print(table)
+
+
+@app.command(name="principles")
+def principles_cmd(
+    project_id: Optional[str] = typer.Option(None, "--project-id", "-p", help="Filter by project"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List principles."""
+    ceo_db = _get_ceo_db()
+    principles = ceo_db.list_principles(project_id=project_id)
+
+    if json_output:
+        typer.echo(json.dumps([{
+            "id": p.id, "content": p.content, "confidence": p.confidence,
+            "evidence_count": p.evidence_count, "domain": p.domain,
+        } for p in principles], default=str))
+        return
+
+    if not principles:
+        console.print("[dim]No principles found.[/dim]")
+        return
+
+    table = Table(title="Principles")
+    table.add_column("Confidence", justify="right")
+    table.add_column("Content")
+    table.add_column("Evidence", justify="right")
+    table.add_column("Domain")
+
+    for p in principles:
+        table.add_row(f"{p.confidence:.0%}", p.content[:60], str(p.evidence_count), p.domain)
+    console.print(table)

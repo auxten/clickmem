@@ -29,7 +29,7 @@ class Transport(Protocol):
     def extract(self, text: str, session_id: str = "") -> list[str]: ...
 
     def ingest(self, text: str, session_id: str = "",
-               source: str = "cursor") -> dict: ...
+               source: str = "cursor", cwd: str = "") -> dict: ...
 
     def forget(self, memory_id: str) -> dict: ...
 
@@ -59,6 +59,7 @@ class LocalTransport:
             os.path.expanduser("~/.openclaw/memory/chdb-data"),
         )
         self._db = None
+        self._ceo_db = None
         self._emb = None
         self._refinement_lock = threading.Lock()
 
@@ -67,6 +68,12 @@ class LocalTransport:
             from memory_core.db import MemoryDB
             self._db = MemoryDB(self._db_path)
         return self._db
+
+    def _get_ceo_db(self):
+        if self._ceo_db is None:
+            from memory_core.ceo_db import CeoDB
+            self._ceo_db = CeoDB(self._db_path)
+        return self._ceo_db
 
     def _get_emb(self):
         if self._emb is None:
@@ -163,44 +170,68 @@ class LocalTransport:
     _GARBAGE_PATTERN_THRESHOLD = 1
 
     def ingest(self, text: str, session_id: str = "",
-               source: str = "cursor") -> dict:
-        """Raw-first ingestion: store raw transcript, then extract memories."""
+               source: str = "cursor", cwd: str = "") -> dict:
+        """CEO Brain ingestion pipeline.
+
+        1. Filter conversation (user-input-first)
+        2. Store raw transcript
+        3. Detect project
+        4. CEO multi-type extraction
+        5. Dedup & merge
+        """
         if text.count("[object Object]") >= self._GARBAGE_PATTERN_THRESHOLD:
             _log.warning("Rejecting ingest: text contains %d '[object Object]' — likely serialization bug in client",
                          text.count("[object Object]"))
             return {"error": "rejected", "reason": "text contains unserialized JS objects"}
 
         db = self._get_db()
+        ceo_db = self._get_ceo_db()
         emb = self._get_emb()
 
+        # Step 1: Filter conversation
+        from memory_core.conversation_filter import filter_conversation
+        filtered = filter_conversation([{"role": "user", "content": text}], agent_source=source)
+
+        # Step 2: Store raw transcript
         raw_id = db.insert_raw(session_id, source, text)
 
+        # Step 3: Detect project
+        from memory_core.project_detect import detect_project
+        project_id = detect_project(ceo_db, cwd=cwd, content=filtered, emb=emb)
+
+        # Step 4: CEO extraction
         from memory_core.llm import get_llm_complete
         llm_complete = get_llm_complete()
 
         if llm_complete is None:
-            m = Memory(
-                content=text, layer="episodic", category="event",
-                embedding=emb.encode_document(text),
-                session_id=session_id, source="agent", raw_id=raw_id,
+            # Fallback: store as raw episode
+            from memory_core.models import Episode
+            ep = Episode(
+                content=filtered, project_id=project_id,
+                session_id=session_id, agent_source=source,
+                raw_id=raw_id,
+                embedding=emb.encode_document(filtered),
             )
-            db.insert(m)
-            ids = [m.id]
-        else:
-            from memory_core.extractor import MemoryExtractor
-            extractor = MemoryExtractor(db, emb)
-            ids = extractor.extract(
-                [{"role": "user", "content": text}],
-                llm_complete, session_id=session_id, raw_id=raw_id,
-            )
+            ceo_db.insert_episode(ep)
+            db.mark_raw_processed(raw_id)
+            return {"raw_id": raw_id, "episodes": [ep.id]}
+
+        from memory_core.ceo_extractor import CEOExtractor
+        extractor = CEOExtractor(ceo_db, emb)
+        result = extractor.extract(
+            filtered, llm_complete, project_id=project_id,
+            session_id=session_id, agent_source=source, raw_id=raw_id,
+        )
 
         db.mark_raw_processed(raw_id)
 
-        raw_counts = db.count_raw()
-        if raw_counts["unprocessed"] >= self._REFINE_THRESHOLD:
-            self._trigger_refinement()
-
-        return {"raw_id": raw_id, "extracted_ids": ids}
+        return {
+            "raw_id": raw_id,
+            "episodes": result.episode_ids,
+            "decisions": result.decision_ids,
+            "principles": result.principle_ids,
+            "project_updates": result.project_updates,
+        }
 
     def _trigger_refinement(self) -> None:
         """Start refinement in a background thread if not already running."""
@@ -382,10 +413,11 @@ class RemoteTransport:
         return data.get("ids", [])
 
     def ingest(self, text: str, session_id: str = "",
-               source: str = "cursor") -> dict:
-        return self._post("/v1/ingest", json={
-            "text": text, "session_id": session_id, "source": source,
-        })
+               source: str = "cursor", cwd: str = "") -> dict:
+        body: dict = {"text": text, "session_id": session_id, "source": source}
+        if cwd:
+            body["cwd"] = cwd
+        return self._post("/v1/ingest", json=body)
 
     def forget(self, memory_id: str) -> dict:
         return self._delete(f"/v1/forget/{memory_id}")
