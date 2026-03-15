@@ -1,0 +1,26 @@
+{
+  "name": "clickmem",
+  "displayName": "ClickMem",
+  "version": "1.0.0",
+  "description": "Automatic long-term memory for AI coding sessions. Captures conversation transcripts and ingests them into ClickMem for cross-session recall.",
+  "author": {
+    "name": "auxten"
+  },
+  "homepage": "https://github.com/auxten/clickmem",
+  "repository": "https://github.com/auxten/clickmem",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "context",
+    "hooks",
+    "transcript",
+    "clickmem"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "memory",
+    "ai-context",
+    "transcript-capture"
+  ],
+  "hooks": "./hooks/hooks.json"
+}
