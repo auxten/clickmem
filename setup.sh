@@ -276,7 +276,20 @@ else
     echo "  Warning: cursor-hooks/ directory not found — skipping."
 fi
 
-# ── 9. Done ──────────────────────────────────────────────────────────
+# ── 9. Auto-import agent history (first install only) ────────────────
+
+STATE_FILE="$HOME/.clickmem/import-state.json"
+if [ ! -f "$STATE_FILE" ]; then
+    echo ""
+    echo "▸ First install detected — importing agent conversation history..."
+    echo "  This runs in the background. Use 'memory status' to check progress."
+    uv run memory import --agent all < /dev/null 2>&1 || true
+else
+    echo ""
+    echo "▸ Import state exists, skipping auto-import. Run 'memory import' to update."
+fi
+
+# ── 10. Done ──────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════════"
@@ -284,20 +297,15 @@ echo " ClickMem deployed successfully!"
 echo "═══════════════════════════════════════════"
 echo ""
 echo " Usage:"
-echo "   memory status              # Show memory statistics"
-echo "   memory remember \"...\"      # Store a memory"
+echo "   memory status              # Show memory stats + import progress"
+echo "   memory discover            # Detect installed agents"
+echo "   memory import              # Import agent history"
 echo "   memory recall \"query\"      # Semantic search"
-echo "   memory review              # Browse memories"
+echo "   memory help                # Show all commands"
 echo ""
 echo " Service:"
 echo "   memory service status      # Check background service"
 echo "   memory service logs -f     # Follow server logs"
-echo "   memory service stop        # Stop the service"
-echo "   memory service start       # Start the service"
-echo ""
-echo " Claude Code: /clickmem skill + auto recall/capture hooks"
-echo ""
-echo " Cursor: hooks active globally (~/.cursor/hooks.json)"
 echo ""
 echo " Or use the full path:"
 echo "   $SCRIPT_DIR/.venv/bin/memory status"

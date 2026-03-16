@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 _MAX_AGENT_TURN_CHARS = 500
-_MAX_TOTAL_CHARS = 4000
+_MAX_TOTAL_CHARS = 16000
 _CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _FILLER_RE = re.compile(
     r"^(Sure,?\s+I('ll|'d| will| can).*?[.!]|"
@@ -83,6 +83,47 @@ def _condense_agent(text: str) -> str:
         result = result[:_MAX_AGENT_TURN_CHARS] + "..."
 
     return result
+
+
+_TURN_BOUNDARY_RE = re.compile(r"^(?:\[User\]|\[Agent\]|user:|assistant:)", re.MULTILINE)
+_MAX_SEGMENTS = 5
+_SEGMENT_SIZE = 4000
+
+
+def segment_conversation(text: str, segment_size: int = _SEGMENT_SIZE, overlap: int = 200) -> list[str]:
+    """Split filtered text into segments at turn boundaries for chunked extraction.
+
+    Returns at most _MAX_SEGMENTS segments, each up to segment_size chars.
+    """
+    if len(text) <= segment_size:
+        return [text]
+
+    # Find all turn-start positions
+    boundaries = sorted(set(
+        m.start() for m in _TURN_BOUNDARY_RE.finditer(text) if m.start() > 0
+    ))
+
+    segments: list[str] = []
+    pos = 0
+    while pos < len(text) and len(segments) < _MAX_SEGMENTS:
+        end = pos + segment_size
+        if end >= len(text):
+            segments.append(text[pos:])
+            break
+
+        # Find the LAST turn boundary within [pos + segment_size//2, end]
+        # to cut as close to segment_size as possible without splitting mid-turn
+        min_cut = pos + segment_size // 2
+        cut = end
+        for b in reversed(boundaries):
+            if min_cut < b <= end:
+                cut = b
+                break
+
+        segments.append(text[pos:cut])
+        pos = max(cut - overlap, pos + 1)
+
+    return segments
 
 
 def extract_user_messages(raw_text: str) -> str:

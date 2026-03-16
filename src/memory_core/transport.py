@@ -83,19 +83,42 @@ class LocalTransport:
         return self._emb
 
     def recall(self, query: str, cfg: RetrievalConfig | None = None,
-               min_score: float = 0.0) -> list[dict]:
+               min_score: float = 0.0, cwd: str = "") -> list[dict]:
         from memory_core.retrieval import hybrid_search
+        from memory_core.ceo_retrieval import ceo_search
+
         db = self._get_db()
         emb = self._get_emb()
-        results = hybrid_search(db, emb, query, cfg=cfg)
-        if min_score > 0:
-            results = [r for r in results if r.get("final_score", 0) >= min_score]
-        for r in results:
+        top_k = cfg.top_k if cfg else 10
+
+        old_results = hybrid_search(db, emb, query, cfg=cfg)
+        for r in old_results:
             try:
                 db.touch(r["id"])
             except Exception:
                 pass
-        return results
+
+        try:
+            ceo_db = self._get_ceo_db()
+            # Detect current project for scope-aware scoring
+            current_project_id = None
+            if cwd:
+                from memory_core.project_detect import detect_project
+                current_project_id = detect_project(ceo_db, cwd=cwd, emb=emb) or None
+            ceo_results = ceo_search(
+                ceo_db, emb, query, project_id=current_project_id, top_k=top_k,
+            )
+            for r in ceo_results:
+                r.setdefault("final_score", r.get("score", 0))
+                r.setdefault("source", "ceo")
+        except Exception:
+            ceo_results = []
+
+        combined = old_results + ceo_results
+        if min_score > 0:
+            combined = [r for r in combined if r.get("final_score", 0) >= min_score]
+        combined.sort(key=lambda r: r.get("final_score", 0), reverse=True)
+        return combined[:top_k]
 
     def remember(self, content: str, layer: str = "semantic",
                  category: str = "knowledge", tags: list[str] | None = None,
@@ -195,9 +218,19 @@ class LocalTransport:
         # Step 2: Store raw transcript
         raw_id = db.insert_raw(session_id, source, text)
 
-        # Step 3: Detect project
+        # Step 3: Detect project (or auto-create from cwd)
         from memory_core.project_detect import detect_project
         project_id = detect_project(ceo_db, cwd=cwd, content=filtered, emb=emb)
+
+        if not project_id and cwd:
+            project_name = os.path.basename(cwd)
+            if project_name and len(project_name) > 1 and project_name not in (".", "/", "tmp"):
+                from memory_core.models import Project
+                p = Project(name=project_name, repo_url=cwd, status="building")
+                if emb:
+                    p.embedding = emb.encode_document(project_name)
+                project_id = ceo_db.insert_project(p)
+                _log.info("Auto-created project '%s' from cwd %s", project_name, cwd)
 
         # Step 4: CEO extraction
         from memory_core.llm import get_llm_complete
@@ -345,7 +378,17 @@ class LocalTransport:
         emb = self._get_emb()
         llm = get_llm_complete()
 
-        return maint.run_all(db, llm_complete=llm, emb=emb)
+        old_result = maint.run_all(db, llm_complete=llm, emb=emb)
+
+        try:
+            from memory_core.ceo_maintenance import CEOMaintenance
+            ceo_db = self._get_ceo_db()
+            ceo_result = CEOMaintenance.run_all(ceo_db, llm_complete=llm, emb=emb)
+            old_result.update(ceo_result)
+        except Exception as exc:
+            _log.warning("CEO maintenance failed: %s", exc)
+
+        return old_result
 
     def sql(self, query: str) -> list[dict]:
         db = self._get_db()

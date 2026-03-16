@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 import typer
@@ -275,16 +276,17 @@ def recall(
         console.print("No matching memories found.")
         return
 
-    by_layer: dict[str, list] = {}
+    by_source: dict[str, list] = {}
     for r in results:
-        by_layer.setdefault(r["layer"], []).append(r)
+        key = r.get("source", r.get("layer", "unknown"))
+        by_source.setdefault(key, []).append(r)
 
-    for lyr, items in by_layer.items():
-        console.print(f"\n── {lyr.capitalize()} {'─' * 40}")
+    for src, items in by_source.items():
+        console.print(f"\n── {src.capitalize()} {'─' * 40}")
         for r in items:
             score = r.get("final_score", 0)
-            cat = r.get("category", "")
-            console.print(f"  [{cat}] {r['content']}  (score={score:.2f})")
+            entity = r.get("entity_type", r.get("category", ""))
+            console.print(f"  [{entity}] {r.get('content', '')[:80]}  (score={score:.2f})")
 
 
 _UUID_PATTERN = re.compile(r'^[0-9a-f]{8}(-[0-9a-f]{4}){0,3}', re.IGNORECASE)
@@ -362,7 +364,7 @@ def review(
 def status(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Show per-layer statistics and LLM configuration."""
+    """Show memory stats, CEO Brain entities, import progress, and LLM config."""
     t = _get_transport()
     data = t.status()
     counts = data.get("counts", {})
@@ -371,22 +373,74 @@ def status(
     from memory_core.llm import get_llm_info
     llm_info = get_llm_info()
 
+    # CEO Brain entity counts
+    ceo_counts = {}
+    try:
+        ceo_db = t._get_ceo_db()
+        ceo_counts = ceo_db.count_all()
+    except Exception:
+        pass
+
+    # Import state
+    import_info = {}
+    try:
+        from memory_core.import_agent import ImportState
+        istate = ImportState()
+        job = istate.get_job()
+        import_info = {
+            "job_status": job.status,
+            "sessions_imported": job.sessions_imported or istate.session_count,
+            "docs_imported": job.docs_imported or istate.doc_count,
+        }
+        if job.status == "running" and job.pid:
+            try:
+                os.kill(job.pid, 0)
+                import_info["pid"] = job.pid
+                import_info["progress"] = job.progress
+            except ProcessLookupError:
+                import_info["job_status"] = "stale"
+    except Exception:
+        pass
+
     if json_output:
         data["llm"] = llm_info
+        data["ceo"] = ceo_counts
+        data["import"] = import_info
         typer.echo(json.dumps(data))
         return
 
+    # Legacy memory
     raw = data.get("raw", {})
-    console.print(f"\nL0 Working    {counts.get('working', 0):>4} entries  (deprecated)")
-    console.print(f"L1 Episodic   {counts.get('episodic', 0):>4} entries")
-    console.print(f"L2 Semantic   {counts.get('semantic', 0):>4} entries")
-    console.print(f"{'─' * 40}")
-    console.print(f"Total         {total:>4} entries")
+    console.print(f"\n[bold]Legacy Memory[/bold]")
+    console.print(f"  L1 Episodic   {counts.get('episodic', 0):>4}")
+    console.print(f"  L2 Semantic   {counts.get('semantic', 0):>4}")
+    console.print(f"  Total         {total:>4}")
     if raw:
-        console.print(f"\nRaw transcripts  {raw.get('total', 0):>4} total")
-        console.print(f"  Processed      {raw.get('processed', 0):>4}")
-        console.print(f"  Unprocessed    {raw.get('unprocessed', 0):>4}")
-    console.print(f"\nLLM mode: {llm_info['mode']}")
+        console.print(f"  Raw transcripts  {raw.get('total', 0):>4} ({raw.get('unprocessed', 0)} unprocessed)")
+
+    # CEO Brain
+    if ceo_counts:
+        console.print(f"\n[bold]CEO Brain[/bold]")
+        console.print(f"  Projects      {ceo_counts.get('projects', 0):>4}")
+        console.print(f"  Decisions     {ceo_counts.get('decisions', 0):>4}")
+        console.print(f"  Principles    {ceo_counts.get('principles', 0):>4}")
+        console.print(f"  Episodes      {ceo_counts.get('episodes', 0):>4}")
+
+    # Import status
+    if import_info:
+        console.print(f"\n[bold]Import[/bold]")
+        job_st = import_info.get("job_status", "")
+        if job_st == "running":
+            console.print(f"  Status: [yellow]running[/yellow] (PID {import_info.get('pid', '?')}, progress: {import_info.get('progress', '?')})")
+        elif job_st == "completed":
+            console.print(f"  Status: [green]completed[/green]")
+        elif job_st == "stale":
+            console.print(f"  Status: [red]stale[/red] (process gone)")
+        console.print(f"  Sessions imported: {import_info.get('sessions_imported', 0)}")
+        console.print(f"  Docs imported:     {import_info.get('docs_imported', 0)}")
+
+    # LLM
+    console.print(f"\n[bold]LLM[/bold] mode: {llm_info['mode']}")
     if llm_info.get("local_model"):
         backend = llm_info.get("local_backend", "not loaded")
         console.print(f"  Local:  {llm_info['local_model']} ({backend})")
@@ -452,6 +506,434 @@ def maintain(
             console.print(f"  Compressed: {result.get('compressed', 0)}")
             console.print(f"  Promoted: {result.get('promoted', 0)}")
             console.print(f"  Reviewed: {result.get('reviewed', 0)}")
+
+
+# ---------------------------------------------------------------------------
+# Help command
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="help")
+def help_cmd(
+    subcmd: Optional[str] = typer.Argument(None, help="Subcommand to get help for"),
+):
+    """Show help for ClickMem commands."""
+    import click
+    ctx = click.get_current_context()
+    if subcmd:
+        # Find the subcommand and invoke its --help
+        root = ctx.parent
+        if root:
+            cmd = root.command
+            if isinstance(cmd, click.MultiCommand):
+                sub = cmd.get_command(root, subcmd)
+                if sub:
+                    sub_ctx = click.Context(sub, info_name=subcmd, parent=root)
+                    typer.echo(sub.get_help(sub_ctx))
+                    return
+        console.print(f"[red]Unknown command: {subcmd}[/red]")
+        raise typer.Exit(1)
+
+    typer.echo(ctx.parent.command.get_help(ctx.parent) if ctx.parent else "")
+
+
+# ---------------------------------------------------------------------------
+# Discover command
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="discover")
+def discover_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Detect installed AI agents, their conversation history, and hook status."""
+    from memory_core.import_agent import discover_agents
+
+    agents = discover_agents()
+
+    if json_output:
+        from dataclasses import asdict
+        typer.echo(json.dumps([asdict(a) for a in agents], default=str))
+        return
+
+    table = Table(title="Installed Agents")
+    table.add_column("Agent", style="bold")
+    table.add_column("History Dir")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Docs", justify="right")
+    table.add_column("Hook")
+
+    for a in agents:
+        hook_status = "[green]installed[/green]" if a.hook_installed else "[dim]not installed[/dim]"
+        display_dir = a.history_dir.replace(os.path.expanduser("~"), "~")
+        table.add_row(a.name, display_dir, str(a.session_count), str(a.doc_count), hook_status)
+
+    console.print(table)
+    total = sum(a.session_count for a in agents)
+    console.print(f"\n[dim]Total sessions available for import: {total}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Hooks sub-app
+# ---------------------------------------------------------------------------
+
+hooks_app = typer.Typer(name="hooks", help="Manage agent hooks (install, check status)")
+app.add_typer(hooks_app)
+
+
+@hooks_app.command(name="install")
+def hooks_install(
+    agent: str = typer.Option("all", "--agent", "-a", help="Agent to install hooks for (claude-code|cursor|openclaw|all)"),
+    server_url: str = typer.Option("http://127.0.0.1:9527", "--server-url", help="ClickMem server URL for hooks"),
+):
+    """Install hooks for AI agents so they automatically send data to ClickMem."""
+    installed = []
+
+    if agent in ("claude-code", "all"):
+        ok = _install_claude_hooks(server_url)
+        if ok:
+            installed.append("claude-code")
+
+    if agent in ("cursor", "all"):
+        ok = _install_cursor_hooks()
+        if ok:
+            installed.append("cursor")
+
+    if agent in ("openclaw", "all"):
+        ok = _install_openclaw_hooks()
+        if ok:
+            installed.append("openclaw")
+
+    if installed:
+        console.print(f"[green]Hooks installed for: {', '.join(installed)}[/green]")
+    else:
+        console.print("[yellow]No hooks installed.[/yellow]")
+
+
+@hooks_app.command(name="status")
+def hooks_status_cmd():
+    """Check which agents have hooks installed."""
+    from memory_core.import_agent import discover_agents
+
+    agents = discover_agents()
+    for a in agents:
+        status = "[green]installed[/green]" if a.hook_installed else "[red]not installed[/red]"
+        console.print(f"  {a.name}: {status}")
+
+
+def _install_claude_hooks(server_url: str) -> bool:
+    settings_path = os.path.expanduser("~/.claude/settings.json")
+    try:
+        data = {}
+        if os.path.exists(settings_path):
+            with open(settings_path) as f:
+                data = json.load(f)
+
+        hooks = data.setdefault("hooks", {})
+        hook_url = f"{server_url}/hooks/claude-code"
+        hook_entry = {"hooks": [{"type": "http", "url": hook_url}]}
+
+        for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
+            event_hooks = hooks.get(event, [])
+            if not isinstance(event_hooks, list):
+                event_hooks = []
+            already = any(
+                hook_url in json.dumps(h) for h in event_hooks
+            )
+            if not already:
+                event_hooks.append(hook_entry)
+            hooks[event] = event_hooks
+
+        data["hooks"] = hooks
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        with open(settings_path, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+
+        console.print(f"  Claude Code: hooks -> {hook_url}")
+        return True
+    except Exception as e:
+        console.print(f"  [red]Claude Code hook install failed: {e}[/red]")
+        return False
+
+
+def _install_cursor_hooks() -> bool:
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cursor-hooks")
+    if not os.path.isdir(src):
+        # Try relative to package
+        for candidate in [
+            os.path.join(os.path.dirname(__file__), "..", "..", "cursor-hooks"),
+            os.path.expanduser("~/clickmem/cursor-hooks"),
+        ]:
+            if os.path.isdir(candidate):
+                src = candidate
+                break
+
+    if not os.path.isdir(src):
+        console.print("  [yellow]Cursor hooks source not found; skipping[/yellow]")
+        return False
+
+    dst = os.path.expanduser("~/.cursor/hooks/clickmem")
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.islink(dst):
+            os.unlink(dst)
+        elif os.path.exists(dst):
+            shutil.rmtree(dst)
+        os.symlink(os.path.abspath(src), dst)
+        console.print(f"  Cursor: {dst} -> {src}")
+        return True
+    except Exception as e:
+        console.print(f"  [red]Cursor hook install failed: {e}[/red]")
+        return False
+
+
+def _install_openclaw_hooks() -> bool:
+    oc_config = os.path.expanduser("~/.openclaw/openclaw.json")
+    plugin_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "clickmem-plugin")
+
+    if not os.path.isdir(plugin_dir):
+        console.print("  [yellow]OpenClaw plugin source not found; skipping[/yellow]")
+        return False
+
+    if not os.path.exists(oc_config):
+        console.print("  [yellow]OpenClaw not installed; skipping[/yellow]")
+        return False
+
+    try:
+        with open(oc_config) as f:
+            config = json.load(f)
+
+        plugins = config.setdefault("plugins", {})
+        paths = plugins.setdefault("paths", [])
+        abs_path = os.path.abspath(plugin_dir)
+        if abs_path not in paths:
+            paths.append(abs_path)
+
+        enabled = plugins.setdefault("enabled", [])
+        if "@openclaw/clickmem" not in enabled:
+            enabled.append("@openclaw/clickmem")
+
+        with open(oc_config, "w") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+
+        console.print(f"  OpenClaw: plugin added at {abs_path}")
+        return True
+    except Exception as e:
+        console.print(f"  [red]OpenClaw hook install failed: {e}[/red]")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# One-click setup command
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="setup")
+def setup_cmd(
+    remote: Optional[str] = typer.Option(None, "--remote", "-r",
+                                         help="Remote server URL (import destination)"),
+    skip_import: bool = typer.Option(False, "--skip-import", help="Skip conversation history import"),
+):
+    """One-click setup: install service, install hooks, discover agents, import history."""
+    import subprocess as sp
+
+    steps = [
+        ("Install service", ["service", "install"]),
+        ("Install hooks", ["hooks", "install"]),
+    ]
+
+    console.print("\n[bold]ClickMem Setup[/bold]\n")
+
+    # Step 1-2: service + hooks
+    for label, cmd_args in steps:
+        console.print(f"[bold]>>> {label}[/bold]")
+        try:
+            full_cmd = [sys.executable, "-m", "memory_core.cli"] + cmd_args
+            result = sp.run(full_cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                console.print(f"  [green]done[/green]")
+            else:
+                console.print(f"  [yellow]warning[/yellow]: {result.stderr.strip()[:200]}")
+        except Exception as e:
+            console.print(f"  [yellow]skipped[/yellow]: {e}")
+
+    # Step 3: wait for server
+    console.print("[bold]>>> Waiting for server...[/bold]")
+    import time
+    for attempt in range(10):
+        try:
+            t = _get_transport()
+            h = t.health()
+            if h.get("status") == "ok":
+                console.print(f"  [green]server ready[/green] ({h.get('total_memories', 0)} memories)")
+                break
+        except Exception:
+            pass
+        if attempt == 9:
+            console.print("  [red]server not responding after 30s[/red]")
+            console.print("  Check: memory service logs")
+            raise typer.Exit(1)
+        time.sleep(3)
+
+    # Step 4: discover agents
+    console.print("[bold]>>> Discovering agents...[/bold]")
+    from memory_core.import_agent import discover_agents
+    agents = discover_agents()
+    total_sessions = 0
+    for a in agents:
+        hook = "[green]hook[/green]" if a.hook_installed else "[dim]no hook[/dim]"
+        console.print(f"  {a.name}: {a.session_count} sessions, {a.doc_count} docs ({hook})")
+        total_sessions += a.session_count
+
+    # Step 5: import
+    if skip_import:
+        console.print("[bold]>>> Import skipped[/bold] (--skip-import)")
+    elif total_sessions == 0:
+        console.print("[bold]>>> No sessions to import[/bold]")
+    else:
+        console.print(f"[bold]>>> Importing {total_sessions} sessions...[/bold] (background)")
+        import_args = [sys.executable, "-m", "memory_core.cli", "import", "--agent", "all"]
+        if remote:
+            import_args.extend(["--remote", remote])
+
+        log_dir = os.path.expanduser("~/.clickmem")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "import.log")
+
+        with open(log_file, "a") as lf:
+            proc = sp.Popen(import_args, stdout=lf, stderr=lf, start_new_session=True)
+        console.print(f"  Started PID {proc.pid}")
+        console.print(f"  Log: {log_file}")
+
+    # Summary
+    console.print("\n[bold]Setup complete.[/bold]")
+    console.print("  memory status        — check stats + import progress")
+    console.print("  memory recall <q>    — search memories")
+    console.print("  memory help          — all commands\n")
+
+
+# ---------------------------------------------------------------------------
+# Import command
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="import")
+def import_cmd(
+    agent: str = typer.Option("all", "--agent", "-a",
+                              help="Agent to import from (claude-code|cursor|openclaw|all)"),
+    foreground: bool = typer.Option(False, "--foreground", "-f",
+                                   help="Run synchronously in foreground (default: background)"),
+    remote: Optional[str] = typer.Option(None, "--remote", "-r",
+                                         help="Remote server URL for import destination"),
+    path: Optional[str] = typer.Option(None, "--path", "-p",
+                                       help="Scan a directory for CLAUDE.md/AGENTS.md to import"),
+):
+    """Import historical conversations and knowledge docs from AI agents."""
+    from memory_core.import_agent import ImportState, run_import, ImportJob
+
+    state = ImportState()
+
+    if not foreground:
+        # Async: fork to background
+        import subprocess as sp
+        cmd = [sys.executable, "-m", "memory_core.cli", "import", "--agent", agent, "--foreground"]
+        if remote:
+            cmd.extend(["--remote", remote])
+
+        job = ImportJob(
+            job_id=f"import-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            agent=agent,
+            status="running",
+        )
+
+        log_dir = os.path.expanduser("~/.clickmem")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "import.log")
+
+        with open(log_file, "a") as lf:
+            proc = sp.Popen(cmd, stdout=lf, stderr=lf, start_new_session=True)
+
+        job.pid = proc.pid
+        state.set_job(job)
+
+        console.print(f"[green]Import started[/green] (PID {proc.pid})")
+        console.print(f"  Agent: {agent}")
+        console.print(f"  Log: {log_file}")
+        console.print(f"\nUse [bold]memory status[/bold] to check progress.")
+        return
+
+    # Foreground mode
+    if remote:
+        from memory_core.transport import RemoteTransport
+        t = RemoteTransport(remote, api_key=_remote_api_key or os.environ.get("CLICKMEM_API_KEY", ""))
+    else:
+        t = _get_transport()
+
+    from datetime import datetime, timezone
+
+    job = ImportJob(
+        job_id=f"import-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
+        started_at=datetime.now(timezone.utc).isoformat(),
+        agent=agent,
+        status="running",
+        pid=os.getpid(),
+    )
+    state.set_job(job)
+
+    agents_list = [agent] if agent != "all" else ["all"]
+
+    def _on_progress(sessions: int, docs: int, msg: str):
+        job.progress = sessions
+        job.sessions_imported = stats.get("sessions_imported", 0)
+        job.docs_imported = stats.get("docs_imported", 0)
+        if sessions % 5 == 0:
+            state.set_job(job)
+        console.print(f"  [{sessions}] {msg}")
+
+    stats: dict = {}
+    try:
+        stats = run_import(t, agents_list, state, on_progress=_on_progress)
+
+        if path:
+            from memory_core.import_agent import scan_path, build_text_with_header
+            path_docs = scan_path(path)
+            for doc in path_docs:
+                if state.is_doc_current(doc.path):
+                    stats["docs_skipped"] = stats.get("docs_skipped", 0) + 1
+                    continue
+                text = build_text_with_header(
+                    doc.content, doc_type=doc.doc_type,
+                    project_name=doc.project_name, cwd=doc.cwd,
+                    github_url=doc.github_url,
+                )
+                try:
+                    t.ingest(text=text, session_id=f"doc-{os.path.basename(doc.path)}", source="import", cwd=doc.cwd)
+                    state.mark_doc(doc.path)
+                    stats["docs_imported"] = stats.get("docs_imported", 0) + 1
+                    console.print(f"  [doc] {doc.doc_type}/{doc.project_name}")
+                except Exception as e:
+                    stats["errors"] = stats.get("errors", 0) + 1
+                    console.print(f"  [red]doc error: {e}[/red]")
+
+        job.status = "completed"
+        job.sessions_imported = stats.get("sessions_imported", 0)
+        job.docs_imported = stats.get("docs_imported", 0)
+        job.total = stats.get("sessions_imported", 0) + stats.get("sessions_skipped", 0)
+    except Exception as e:
+        job.status = "failed"
+        job.error = str(e)
+        logger.exception("Import failed")
+    finally:
+        state.set_job(job)
+
+    console.print(f"\n[bold]Import {'completed' if job.status == 'completed' else 'FAILED'}[/bold]")
+    console.print(f"  Sessions: {stats.get('sessions_imported', 0)} imported, {stats.get('sessions_skipped', 0)} skipped")
+    console.print(f"  Docs:     {stats.get('docs_imported', 0)} imported, {stats.get('docs_skipped', 0)} skipped")
+    if stats.get("errors"):
+        console.print(f"  [red]Errors: {stats['errors']}[/red]")
 
 
 # ---------------------------------------------------------------------------
@@ -623,8 +1105,8 @@ def mcp(
         raise typer.Exit(code=1)
 
 
-@app.command(name="discover")
-def discover_cmd(
+@app.command(name="discover-server")
+def discover_server_cmd(
     timeout: float = typer.Option(3.0, help="Discovery timeout in seconds"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):

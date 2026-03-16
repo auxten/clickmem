@@ -1,197 +1,173 @@
 # ClickMem CLI Reference
 
-Complete parameter reference for the `memory` command.
+## Global Options
 
-## Environment
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLICKMEM_DB_PATH` | `~/.openclaw/memory/chdb-data` | Database storage path |
-
----
-
-## remember
-
-Store a memory.
-
-```
-memory remember <content> [OPTIONS]
-```
-
-| Argument/Option | Type | Default | Description |
-|-----------------|------|---------|-------------|
-| `content` | STRING | **required** | Memory content to store |
-| `--layer` | STRING | `semantic` | Memory layer: `working`, `episodic`, `semantic` |
-| `--category` | STRING | `knowledge` | Category: `preference`, `decision`, `knowledge`, `person`, `project`, `workflow`, `insight`, `context` |
-| `--tags` | STRING | `None` | Comma-separated tags |
-| `--json` | BOOL | `False` | Output as JSON |
-
-**JSON output**:
-```json
-{"id": "abc12345", "layer": "semantic", "category": "knowledge", "status": "stored"}
-```
+| Option | Env Var | Description |
+|--------|---------|-------------|
+| `--remote URL` | `CLICKMEM_REMOTE` | Remote server URL (or `"auto"` for mDNS) |
+| `--api-key KEY` | `CLICKMEM_API_KEY` | API key for remote auth |
+| `--local` | — | Use embedded DB directly (no server) |
 
 ---
 
-## recall
-
-Semantic search for memories.
+## help
 
 ```
-memory recall <query> [OPTIONS]
+memory help [SUBCMD]
 ```
 
-| Argument/Option | Type | Default | Description |
-|-----------------|------|---------|-------------|
-| `query` | STRING | **required** | Search query |
-| `--layer` | STRING | `None` | Filter by layer |
-| `--category` | STRING | `None` | Filter by category |
-| `--top-k`, `-k` | INT | `10` | Max results |
-| `--min-score` | FLOAT | `0.0` | Minimum relevance score |
-| `--json` | BOOL | `False` | Output as JSON |
-
-**JSON output**:
-```json
-[{"id": "...", "content": "...", "layer": "...", "category": "...", "final_score": 0.85}]
-```
+Show help for all commands, or detailed help for a specific subcommand.
 
 ---
 
-## forget
-
-Delete a memory by ID or ID prefix.
+## discover
 
 ```
-memory forget <memory_id> [OPTIONS]
+memory discover [--json]
 ```
 
-| Argument/Option | Type | Default | Description |
-|-----------------|------|---------|-------------|
-| `memory_id` | STRING | **required** | Memory ID or prefix |
-| `--json` | BOOL | `False` | Output as JSON |
+Detect installed AI agents, their conversation history, and hook status.
 
-**JSON output**:
-```json
-{"id": "abc12345", "status": "deleted"}
+---
+
+## hooks install
+
 ```
+memory hooks install [--agent claude-code|cursor|openclaw|all] [--server-url URL]
+```
+
+Install hooks for AI agents.
+
+## hooks status
+
+```
+memory hooks status
+```
+
+Show which agents have hooks installed.
+
+---
+
+## import
+
+```
+memory import [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--agent` | `all` | Agent: `claude-code`, `cursor`, `openclaw`, `all` |
+| `--foreground` | `False` | Run synchronously (default: async background) |
+| `--remote URL` | — | Destination server URL |
+| `--path DIR` | — | Scan a directory for CLAUDE.md/AGENTS.md |
 
 ---
 
 ## status
 
-Show per-layer statistics.
-
 ```
-memory status [OPTIONS]
+memory status [--json]
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--json` | BOOL | `False` | Output as JSON |
-
-**JSON output**:
-```json
-{"counts": {"working": 0, "episodic": 5, "semantic": 42}, "total": 47}
-```
+Shows: legacy memory counts, CEO Brain entities, import progress, LLM config.
 
 ---
 
-## review
-
-Browse memories by layer.
+## recall
 
 ```
-memory review [OPTIONS]
+memory recall <query> [OPTIONS]
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--layer` | STRING | `semantic` | Layer to review |
-| `--limit` | INT | `100` | Max entries |
-
-Output: Rich table with ID, Category, Content, Date.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--top-k` | `10` | Max results |
+| `--min-score` | `0.0` | Minimum relevance score |
+| `--layer` | — | Filter: `episodic`, `semantic` |
+| `--category` | — | Filter: `preference`, `decision`, etc. |
+| `--json` | `False` | JSON output |
 
 ---
 
-## sql
-
-Execute a raw SQL query against the memory database.
+## remember
 
 ```
-memory sql <query> [OPTIONS]
+memory remember <content> [OPTIONS]
 ```
 
-| Argument/Option | Type | Default | Description |
-|-----------------|------|---------|-------------|
-| `query` | STRING | **required** | SQL query |
-| `--json` | BOOL | `False` | Output as JSON |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--layer` | `semantic` | `working`, `episodic`, `semantic` |
+| `--category` | `knowledge` | `preference`, `decision`, `knowledge`, `person`, `project`, `insight` |
+| `--tags` | — | Comma-separated tags |
+| `--json` | `False` | JSON output |
+
+---
+
+## forget
+
+```
+memory forget <id_or_query> [--json]
+```
+
+Delete by UUID, prefix, or semantic search match.
 
 ---
 
 ## maintain
 
-Run maintenance tasks (clean stale, purge deleted, compress, promote).
-
 ```
-memory maintain [OPTIONS]
+memory maintain [--dry-run] [--json]
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--dry-run` | BOOL | `False` | Preview without modifying |
-| `--json` | BOOL | `False` | Output as JSON |
+Run maintenance: stale cleanup, CEO principle dedup, episode expiry, decision outcome validation.
 
-**JSON output (dry-run)**:
-```json
-{"dry_run": true, "would_clean_stale": 3, "would_purge_deleted": 1, "promotion_candidates": {}}
+---
+
+## portfolio
+
+```
+memory portfolio [--json]
+```
+
+All projects overview with decision/episode counts.
+
+## brief
+
+```
+memory brief [--project-id ID] [--query TEXT] [--json]
+```
+
+Detailed project briefing with principles, decisions, recent activity.
+
+## projects / decisions / principles
+
+```
+memory projects [--status STATUS] [--json]
+memory decisions [--project-id ID] [--limit N] [--json]
+memory principles [--project-id ID] [--json]
 ```
 
 ---
 
-## export-context
-
-Export memories to workspace .md files or JSON.
+## serve
 
 ```
-memory export-context [<workspace_path>] [OPTIONS]
+memory serve [--host HOST] [--port PORT] [--debug] [--no-mcp]
 ```
 
-| Argument/Option | Type | Default | Description |
-|-----------------|------|---------|-------------|
-| `workspace_path` | PATH | `""` | Workspace directory (omit for `--content` mode) |
-| `--json` | BOOL | `False` | Output as JSON |
-| `--content` | BOOL | `False` | Return markdown as JSON instead of writing files |
-| `--max-items`, `-n` | INT | `50` | Max entries per section |
-| `--max-chars`, `-c` | INT | `8000` | Max chars per section |
+Start REST API + MCP SSE server.
 
----
-
-## import-openclaw
-
-Import memory history from OpenClaw data directory.
+## mcp
 
 ```
-memory import-openclaw [OPTIONS]
+memory mcp [--transport stdio|sse]
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--openclaw-dir` | PATH | `~/.openclaw` | OpenClaw data directory |
-| `--json` | BOOL | `False` | Output as JSON |
+Start MCP server for Claude Code / Cursor.
 
----
-
-## uninstall
-
-Uninstall clickmem and optionally export memories.
+## service
 
 ```
-memory uninstall [OPTIONS]
+memory service install|uninstall|start|stop|status|logs
 ```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--export` | BOOL | `False` | Export memories to OpenClaw .md before removing |
-| `--openclaw-dir` | PATH | `~/.openclaw` | OpenClaw data directory |
-| `-y`, `--yes` | BOOL | `False` | Skip confirmation |
-| `--json` | BOOL | `False` | Output as JSON |

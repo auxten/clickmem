@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from memory_core.ceo_db import CeoDB
 
 
+_SAME_PROJECT_BOOST = 1.3
+_GLOBAL_BOOST = 1.0
+_OTHER_PROJECT_PENALTY = 0.6
+
+
 def ceo_search(
     ceo_db: CeoDB,
     emb,
@@ -24,7 +29,12 @@ def ceo_search(
     domain: str | None = None,
     include_global: bool = True,
 ) -> list[dict]:
-    """Unified search across CEO entities.
+    """Unified search across CEO entities with project-aware scoring.
+
+    When project_id is set, results are scope-boosted:
+    - Same project: 1.3x (most relevant)
+    - Global (project_id=""): 1.0x (universally applicable)
+    - Other project: 0.6x (may be cross-project noise)
 
     Returns list of dicts with keys:
     entity_type, id, content, score, metadata
@@ -36,15 +46,18 @@ def ceo_search(
     types = entity_types or ["decisions", "principles", "episodes"]
     results: list[dict] = []
 
-    # Determine project IDs to search
-    # None = no filter (search all), "" = global only, "xxx" = specific project
-    search_pids: list[str | None] = []
-    if project_id:
-        search_pids.append(project_id)
-        if include_global:
-            search_pids.append("")  # also search global items
-    else:
-        search_pids.append(None)  # no filter — search everything
+    # Always search everything, then apply project-aware score boosting
+    search_pids: list[str | None] = [None]
+
+    def _project_boost(item_project_id: str) -> float:
+        """Score multiplier based on project scope relevance."""
+        if not project_id:
+            return 1.0
+        if item_project_id == project_id:
+            return _SAME_PROJECT_BOOST
+        if not item_project_id:
+            return _GLOBAL_BOOST
+        return _OTHER_PROJECT_PENALTY
 
     for pid in search_pids:
         if "decisions" in types:
@@ -54,9 +67,9 @@ def ceo_search(
                     continue
                 dist = ceo_db._cosine_dist(query_vec, d.embedding) if d.embedding else 1.0
                 score = 1.0 - dist
-                # Boost validated decisions
                 if d.outcome_status == "validated":
                     score *= 1.2
+                score *= _project_boost(d.project_id)
                 results.append({
                     "entity_type": "decision",
                     "id": d.id,
@@ -77,6 +90,7 @@ def ceo_search(
                     continue
                 dist = ceo_db._cosine_dist(query_vec, p.embedding) if p.embedding else 1.0
                 score = (1.0 - dist) * (0.5 + 0.5 * p.confidence)
+                score *= _project_boost(p.project_id)
                 results.append({
                     "entity_type": "principle",
                     "id": p.id,
@@ -97,11 +111,11 @@ def ceo_search(
                     continue
                 dist = ceo_db._cosine_dist(query_vec, e.embedding) if e.embedding else 1.0
                 score = 1.0 - dist
-                # Time decay for episodes (half-life 60 days)
                 if e.created_at:
                     age_days = (datetime.now(timezone.utc) - e.created_at).total_seconds() / 86400
                     decay = math.exp(-0.693 * age_days / 60.0)
                     score *= decay
+                score *= _project_boost(e.project_id)
                 results.append({
                     "entity_type": "episode",
                     "id": e.id,

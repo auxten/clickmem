@@ -214,9 +214,16 @@ class LocalLLMEngine:
 
         def _generate(prompt: str) -> str:
             messages = [{"role": "user", "content": prompt}]
-            formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            template_kwargs: dict = {
+                "tokenize": False,
+                "add_generation_prompt": True,
+            }
+            try:
+                formatted = tokenizer.apply_chat_template(
+                    messages, enable_thinking=False, **template_kwargs,
+                )
+            except TypeError:
+                formatted = tokenizer.apply_chat_template(messages, **template_kwargs)
             kwargs: dict = {"max_tokens": max_tok}
             if sampler is not None:
                 kwargs["sampler"] = sampler

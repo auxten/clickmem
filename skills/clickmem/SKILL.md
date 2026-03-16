@@ -1,108 +1,105 @@
 ---
 name: clickmem
 description: |
-  Memory management for AI agents. Use when:
-  - User mentions preferences, decisions, project facts, or important context → remember
-  - Starting a task or user asks "what did we discuss" → recall
+  CEO Brain memory system for AI agents. Use when:
+  - User mentions preferences, decisions, project facts → remember or let auto-capture handle it
+  - Need project context, past decisions, or principles → recall or ceo_brief
   - User wants to delete or correct outdated memory → forget
-  - User asks about memory stats or capacity → status
+  - Need project overview or decision history → portfolio, decisions, principles
+  - User asks about memory stats → status
 metadata:
   openclaw:
     emoji: 🧠
     requires:
       bins:
         - memory
-    install: "git clone https://github.com/auxten/clickmem && cd clickmem && ./setup.sh"
+    install: "pip install clickmem && memory service install && memory hooks install"
 ---
 
-# ClickMem — Memory Operations
+# ClickMem — CEO Brain for AI Agents
 
-All commands use `--json` for structured output. See `references/cli-reference.md` for full parameter details.
+All commands support `--json` for structured output.
+
+---
+
+## Quick Reference
+
+```bash
+# Discovery & Setup
+memory discover                     # Detect installed agents + session counts
+memory hooks install                # Install hooks for all agents
+memory import                       # Import conversation history (async)
+memory import --path ~/project      # Import docs from a specific directory
+
+# Search & Recall
+memory recall "<query>"             # Hybrid search (legacy + CEO Brain)
+memory status                       # Stats + CEO entities + import progress
+
+# CEO Brain
+memory portfolio                    # All projects overview
+memory brief --project-id <id>      # Detailed project briefing
+memory decisions                    # List decisions
+memory principles                   # List principles
+memory projects                     # List projects
+
+# Memory Operations
+memory remember "<content>"         # Store a memory
+memory forget <id>                  # Delete by ID
+memory maintain                     # Run maintenance + CEO dedup
+
+# Help
+memory help [subcmd]                # Help for any command
+```
+
+---
+
+## CEO Brain Tools (MCP)
+
+These tools are available via MCP to Claude Code and Cursor:
+
+| Tool | When to use |
+|------|-------------|
+| `ceo_brief` | Get project context, principles, recent decisions |
+| `ceo_decide` | Decision support — find related past decisions and principles |
+| `ceo_remember` | Store a structured decision, principle, or episode |
+| `ceo_review` | Check a plan against existing principles |
+| `ceo_retro` | Retrospective — review decisions and extract new principles |
+| `ceo_portfolio` | Cross-project overview |
 
 ---
 
 ## Remember
 
-**When**: User mentions a preference, decision, project fact, workflow convention, or any important context worth persisting.
+**When**: User mentions a preference, decision, or important context.
 
 ```bash
-memory remember "<content>" --layer semantic --category knowledge --json
+memory remember "<content>" --layer semantic --category preference --json
 ```
 
-Choose the right `--category`:
-- `preference` — user likes/dislikes, tool choices
-- `decision` — architectural or design decisions
-- `knowledge` — facts, definitions, domain info
-- `person` — info about people
-- `project` — project structure, conventions
-- `workflow` — process, CI/CD, deployment patterns
-- `insight` — lessons learned, debugging findings
-- `context` — session/situational context
-
-Choose the right `--layer`:
-- `working` — short-lived, current session only
-- `episodic` — medium-term, event-based
-- `semantic` — long-term, factual (default)
-
-Optional: `--tags "tag1,tag2"` for extra metadata.
-
-**Example**:
-```bash
-memory remember "User prefers pytest over unittest for all new test files" --layer semantic --category preference --json
-```
+Categories: `preference`, `decision`, `knowledge`, `person`, `project`, `insight`
+Layers: `working` (session), `episodic` (medium-term), `semantic` (long-term, default)
 
 ---
 
 ## Recall
 
-**When**: Before starting a task, search for relevant context. Also when user asks "what did we discuss about X" or "do you remember Y".
+**When**: Before starting a task, or when user asks "what did we discuss about X".
 
 ```bash
 memory recall "<query>" --top-k 5 --json
 ```
 
-Options:
-- `--top-k 5` — max results (default 10)
-- `--min-score 0.3` — filter low-relevance matches
-- `--layer semantic` — restrict to a specific layer
-- `--category preference` — restrict to a category
-
-**Example**:
-```bash
-memory recall "testing preferences" --top-k 3 --category preference --json
-```
-
----
-
-## Forget
-
-**When**: User asks to delete a memory, correct outdated info, or remove something incorrect.
-
-Two-step process — first find the memory ID, then delete:
-
-```bash
-# Step 1: Find the memory
-memory recall "<query>" --json
-
-# Step 2: Delete by ID (or ID prefix)
-memory forget <id> --json
-```
-
-**Example**:
-```bash
-memory recall "old database convention" --top-k 3 --json
-# → returns memories with IDs
-memory forget a1b2c3d4 --json
-```
+Searches both legacy memories and CEO Brain entities (decisions, principles, episodes).
+Results are project-scope-aware — same-project results boosted, other-project results deprioritized.
 
 ---
 
 ## Status
 
-**When**: User asks about memory stats, capacity, or how many memories are stored.
+**When**: User asks about memory stats.
 
 ```bash
 memory status --json
 ```
 
-Returns counts per layer (Working/Episodic/Semantic) and total.
+Shows: legacy memory counts, CEO Brain entity counts (projects/decisions/principles/episodes), import progress, LLM config.

@@ -51,7 +51,13 @@ Rules:
 - Prefer fewer, higher-quality extractions over many low-quality ones.
 - Do not invent information not present in the conversation.
 - Decisions must be actual choices made, not hypothetical discussions.
-- Principles must be generalisable beyond this single conversation.
+- If the conversation contains role-based workflow outputs (JSON with APPROVE/REJECT/IMPROVE), \
+extract the underlying product or tech decision, not the approval action itself. \
+The real decision is what was approved and why — extract that substance.
+- Each episode should capture WHAT happened and WHY, not just list actions. \
+Prioritise episodes that show user intent, unexpected outcomes, or pivots.
+- Principles must be genuinely reusable across projects. \
+Do not extract principles that merely restate the conversation's specific instructions.
 - Return ONLY the JSON array, no other text.
 
 ---
@@ -86,27 +92,53 @@ class CEOExtractor:
         agent_source: str = "",
         raw_id: str = "",
     ) -> ExtractionResult:
-        """Run multi-type extraction on filtered conversation text."""
+        """Run multi-type extraction on filtered conversation text.
+
+        For long texts, splits into segments and extracts from each.
+        Dedup in _process_* methods prevents duplicates across segments.
+        """
         result = ExtractionResult()
 
         if not text or not text.strip():
             return result
 
-        # Call LLM
+        from memory_core.conversation_filter import segment_conversation
+        segments = segment_conversation(text)
+
+        for seg in segments:
+            self._extract_segment(
+                seg, llm_complete, result,
+                project_id=project_id, session_id=session_id,
+                agent_source=agent_source, raw_id=raw_id,
+            )
+
+        return result
+
+    def _extract_segment(
+        self,
+        text: str,
+        llm_complete: Callable[[str], str],
+        result: ExtractionResult,
+        project_id: str = "",
+        session_id: str = "",
+        agent_source: str = "",
+        raw_id: str = "",
+    ) -> None:
+        """Extract from a single text segment, appending to result."""
         prompt = _CEO_EXTRACTION_PROMPT.format(text=text[:4000])
         try:
             raw_response = llm_complete(prompt)
         except Exception as e:
             logger.warning("CEO extraction LLM call failed: %s", e)
-            return result
+            return
 
-        # Parse JSON
         items = self._parse_response(raw_response)
         if not items:
-            return result
+            return
 
-        # Process each item
         for item in items:
+            if not isinstance(item, dict):
+                continue
             item_type = item.get("type", "")
             try:
                 if item_type == "episode":
@@ -131,7 +163,7 @@ class CEOExtractor:
             except Exception as e:
                 logger.warning("Failed to process extracted item %s: %s", item_type, e)
 
-        return result
+    _TRIVIAL_CHOICES = frozenset({"APPROVE", "REJECT", "IMPROVE", "PASS", "FAIL"})
 
     def _process_episode(
         self, item: dict, project_id: str, session_id: str, agent_source: str, raw_id: str,
@@ -153,24 +185,46 @@ class CEOExtractor:
         )
         if self._emb:
             ep.embedding = self._emb.encode_document(content)
+
+        from memory_core.ceo_dedup import dedup_episode
+        dup_id = dedup_episode(self._db, self._emb, ep)
+        if dup_id:
+            logger.debug("Episode dedup: skipping duplicate of %s", dup_id[:8])
+            return None
+
         return self._db.insert_episode(ep)
 
     def _process_decision(self, item: dict, project_id: str) -> str | None:
         title = item.get("title", "")
+        choice = item.get("choice", "")
         if not title:
             return None
+        if choice.strip().upper() in self._TRIVIAL_CHOICES:
+            return None
+
         d = Decision(
             project_id=project_id,
             title=title,
             context=item.get("context", ""),
-            choice=item.get("choice", ""),
+            choice=choice,
             reasoning=item.get("reasoning", ""),
             alternatives=item.get("alternatives", ""),
             domain=item.get("domain", "tech"),
         )
-        embed_text = f"{title} {d.choice} {d.reasoning}"
+        embed_text = f"{title} {choice} {d.reasoning}"
         if self._emb:
             d.embedding = self._emb.encode_document(embed_text)
+
+        from memory_core.ceo_dedup import dedup_decision
+        result = dedup_decision(self._db, self._emb, d)
+        if result.action == "UPDATE" and result.existing_id:
+            self._db.update_decision(result.existing_id,
+                                     context=d.context, choice=d.choice,
+                                     reasoning=d.reasoning, alternatives=d.alternatives)
+            return result.existing_id
+        if result.action == "NOOP":
+            return None
+
         return self._db.insert_decision(d)
 
     def _process_principle(self, item: dict, project_id: str) -> str | None:
@@ -187,19 +241,31 @@ class CEOExtractor:
         )
         if self._emb:
             p.embedding = self._emb.encode_document(content)
+
+        from memory_core.ceo_dedup import dedup_principle
+        result = dedup_principle(self._db, self._emb, p)
+        if result.action in ("NOOP", "CONFLICT"):
+            if result.action == "CONFLICT":
+                logger.warning("Principle conflict with %s: %s", result.existing_id, result.note)
+            return None
+
         return self._db.insert_principle(p)
 
     @staticmethod
     def _parse_response(raw: str) -> list[dict]:
-        """Parse LLM response as JSON array, tolerating markdown fences."""
+        """Parse LLM response as JSON array, tolerating markdown fences and trailing text.
+
+        Local models often append chain-of-thought after the JSON.  We bracket-match
+        to extract just the outermost ``[…]`` or ``{…}`` structure.
+        """
         text = raw.strip()
         # Strip markdown code fences
         if text.startswith("```"):
             lines = text.split("\n")
-            # Remove first and last fence lines
             lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines)
+            text = "\n".join(lines).strip()
 
+        # Fast path: entire text is valid JSON
         try:
             parsed = json.loads(text)
             if isinstance(parsed, list):
@@ -207,5 +273,73 @@ class CEOExtractor:
             if isinstance(parsed, dict):
                 return [parsed]
         except json.JSONDecodeError:
-            logger.warning("Failed to parse CEO extraction response as JSON")
+            pass
+
+        # Extract first JSON array via bracket counting
+        start = text.find("[")
+        if start != -1:
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, list):
+                                return parsed
+                        except json.JSONDecodeError:
+                            break
+                        break
+
+        # Fallback: try to find a JSON object
+        start = text.find("{")
+        if start != -1:
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, dict):
+                                return [parsed]
+                        except json.JSONDecodeError:
+                            break
+                        break
+
+        logger.warning("Failed to parse CEO extraction response as JSON: %.200s", text)
         return []

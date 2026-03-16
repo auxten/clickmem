@@ -30,6 +30,9 @@ from memory_core.ceo_skills import (
 # CEO Brain maintenance
 from memory_core.ceo_maintenance import CEOMaintenance
 
+# Import system
+from memory_core.import_agent import discover_agents, run_import, ImportState
+
 # Legacy (kept for migration)
 from memory_core.retrieval import hybrid_search
 from memory_core.extractor import MemoryExtractor
@@ -43,6 +46,8 @@ __all__ = [
     "CeoDB", "CEOExtractor", "CEOMaintenance",
     "ceo_search", "build_ceo_context",
     "ceo_brief", "ceo_decide", "ceo_remember", "ceo_review", "ceo_retro", "ceo_portfolio",
+    # Import
+    "discover_agents", "run_import", "ImportState",
     # Core
     "EmbeddingEngine", "get_llm_complete", "get_llm_info",
     # Legacy

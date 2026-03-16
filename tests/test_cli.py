@@ -210,9 +210,7 @@ class TestStatusCommand:
         """status displays per-layer counts."""
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
-        # Should show layer names
         output = result.stdout.lower()
-        assert "working" in output or "l0" in output
         assert "episodic" in output or "l1" in output
         assert "semantic" in output or "l2" in output
 
@@ -261,7 +259,7 @@ class TestLocalFallback:
         result = runner.invoke(app, ["--local", "status"])
         assert result.exit_code == 0
         output = result.stdout.lower()
-        assert "working" in output or "l0" in output
+        assert "episodic" in output or "legacy" in output
 
     def test_local_flag_status_json(self):
         """memory --local status --json returns valid JSON."""

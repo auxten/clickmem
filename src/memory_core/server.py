@@ -85,6 +85,16 @@ async def lifespan(application: FastAPI):
         if raw_counts.get("unprocessed", 0) > 0:
             _log.info("Startup: %d unprocessed raw, triggering refinement", raw_counts["unprocessed"])
             t._trigger_refinement()
+
+        try:
+            ceo_db = t._get_ceo_db()
+            emb = t._get_emb()
+            from memory_core.ceo_maintenance import CEOMaintenance
+            deduped = await asyncio.to_thread(CEOMaintenance.dedup_principles, ceo_db, emb)
+            if deduped:
+                _log.info("Startup: deduped %d CEO principles", deduped)
+        except Exception as exc:
+            _log.debug("Startup CEO dedup skipped: %s", exc)
     yield
 
 

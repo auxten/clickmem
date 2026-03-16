@@ -35,10 +35,10 @@ class TestFilterConversation:
 
     def test_max_total_chars(self):
         messages = [
-            {"role": "user", "content": "x" * 5000},
+            {"role": "user", "content": "x" * 20000},
         ]
         result = filter_conversation(messages)
-        assert len(result) <= 4100  # some overhead for prefix
+        assert len(result) <= 16100  # 16000 limit + prefix overhead
 
     def test_empty_messages(self):
         result = filter_conversation([])
