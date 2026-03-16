@@ -11,10 +11,10 @@ AI coding assistants (Claude Code, Cursor, OpenClaw, etc.) forget everything bet
 │ Claude   │  │ Cursor   │  │ OpenClaw │  │ CLI (any machine)│
 │ Code     │  │          │  │          │  │                  │
 └────┬─────┘  └────┬─────┘  └────┬─────┘  └────────┬─────────┘
-     │MCP          │MCP          │MCP/HTTP          │HTTP
-     │             │             │                  │
-┌────▼─────────────▼─────────────▼──────────────────▼──────────┐
-│                ClickMem Server  (single port)                 │
+     │MCP          │MCP          │MCP/HTTP         │HTTP
+     │             │             │                 │
+┌────▼─────────────▼─────────────▼─────────────────▼───────────┐
+│                ClickMem Server  (single port)                │
 │  ┌───────────────────────────┐  ┌──────────────────────────┐ │
 │  │ /v1/*  REST API (JSON)    │  │  mDNS Discovery          │ │
 │  │ /sse   MCP SSE connection │  │  _clickmem._tcp          │ │
