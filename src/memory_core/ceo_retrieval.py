@@ -1,7 +1,7 @@
 """CEO Retrieval — cross-entity hybrid search for CEO Brain.
 
 Replaces retrieval.py. Searches across decisions, principles, and episodes
-with entity-type-specific scoring adjustments.
+with entity-type-specific scoring adjustments and session-aware scope matching.
 """
 
 from __future__ import annotations
@@ -18,6 +18,50 @@ _SAME_PROJECT_BOOST = 1.3
 _GLOBAL_BOOST = 1.0
 _OTHER_PROJECT_PENALTY = 0.6
 
+_SCOPE_MATCH_BOOST = 1.2
+_SCOPE_MISMATCH_PENALTY = 0.3
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _scope_score(
+    scope_embedding: list[float] | None,
+    query_vec: list[float],
+    session_topic_vec: list[float] | None,
+    task_context_vec: list[float] | None,
+) -> float:
+    """Returns multiplier: 1.2 (match), 0.3 (mismatch), 1.0 (no scope)."""
+    if not scope_embedding:
+        return 1.0  # no scope = global
+
+    # Pick context vector: task_context > session_topic > query-only
+    context_vec = task_context_vec or session_topic_vec
+
+    if context_vec is not None:
+        # Fuse context (0.6) + query (0.4)
+        context_sim = _cosine_sim(context_vec, scope_embedding)
+        query_sim = _cosine_sim(query_vec, scope_embedding)
+        fused = 0.6 * context_sim + 0.4 * query_sim
+    else:
+        fused = _cosine_sim(query_vec, scope_embedding)
+
+    if fused > 0.5:
+        return _SCOPE_MATCH_BOOST
+    elif fused < 0.3:
+        return _SCOPE_MISMATCH_PENALTY
+    else:
+        return 1.0
+
 
 def ceo_search(
     ceo_db: CeoDB,
@@ -28,6 +72,8 @@ def ceo_search(
     top_k: int = 10,
     domain: str | None = None,
     include_global: bool = True,
+    session_id: str | None = None,
+    task_context: str | None = None,
 ) -> list[dict]:
     """Unified search across CEO entities with project-aware scoring.
 
@@ -35,6 +81,9 @@ def ceo_search(
     - Same project: 1.3x (most relevant)
     - Global (project_id=""): 1.0x (universally applicable)
     - Other project: 0.6x (may be cross-project noise)
+
+    When session_id is set, session topic tracking is used for scope matching.
+    When task_context is set, it provides explicit task context for scope matching.
 
     Returns list of dicts with keys:
     entity_type, id, content, score, metadata
@@ -45,6 +94,19 @@ def ceo_search(
     query_vec = emb.encode_query(query[:500])
     types = entity_types or ["decisions", "principles", "episodes"]
     results: list[dict] = []
+
+    # Session topic tracking
+    session_topic_vec = None
+    task_context_vec = None
+
+    if session_id:
+        from memory_core.session_context import get_session_store
+        store = get_session_store()
+        store.update(session_id, query_vec, query)
+        session_topic_vec = store.get_topic_embedding(session_id)
+
+    if task_context:
+        task_context_vec = emb.encode_query(task_context[:500])
 
     # Always search everything, then apply project-aware score boosting
     search_pids: list[str | None] = [None]
@@ -70,6 +132,9 @@ def ceo_search(
                 if d.outcome_status == "validated":
                     score *= 1.2
                 score *= _project_boost(d.project_id)
+                # Apply scope scoring for decisions
+                scope_mult = _scope_score(d.scope_embedding, query_vec, session_topic_vec, task_context_vec)
+                score *= scope_mult
                 results.append({
                     "entity_type": "decision",
                     "id": d.id,
@@ -80,6 +145,8 @@ def ceo_search(
                         "domain": d.domain,
                         "outcome_status": d.outcome_status,
                         "project_id": d.project_id,
+                        "scope_match": scope_mult,
+                        "activation_scope": d.activation_scope,
                     },
                 })
 
@@ -91,6 +158,9 @@ def ceo_search(
                 dist = ceo_db._cosine_dist(query_vec, p.embedding) if p.embedding else 1.0
                 score = (1.0 - dist) * (0.5 + 0.5 * p.confidence)
                 score *= _project_boost(p.project_id)
+                # Apply scope scoring for principles
+                scope_mult = _scope_score(p.scope_embedding, query_vec, session_topic_vec, task_context_vec)
+                score *= scope_mult
                 results.append({
                     "entity_type": "principle",
                     "id": p.id,
@@ -101,6 +171,8 @@ def ceo_search(
                         "evidence_count": p.evidence_count,
                         "domain": p.domain,
                         "project_id": p.project_id,
+                        "scope_match": scope_mult,
+                        "activation_scope": p.activation_scope,
                     },
                 })
 
@@ -116,6 +188,7 @@ def ceo_search(
                     decay = math.exp(-0.693 * age_days / 60.0)
                     score *= decay
                 score *= _project_boost(e.project_id)
+                # No scope scoring for episodes (factual records, not prescriptive)
                 results.append({
                     "entity_type": "episode",
                     "id": e.id,

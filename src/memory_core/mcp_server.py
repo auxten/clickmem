@@ -66,6 +66,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID (empty for all)"},
                     "query": {"type": "string", "description": "Optional search query within the project"},
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
+                    "task_context": {"type": "string", "description": "Current task context for scope filtering"},
                 },
             },
         ),
@@ -79,6 +81,8 @@ async def list_tools() -> list[Tool]:
                     "options": {"type": "array", "items": {"type": "string"}, "description": "Available options"},
                     "context": {"type": "string", "description": "Additional context"},
                     "project_id": {"type": "string", "description": "Project ID"},
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
+                    "task_context": {"type": "string", "description": "Current task context for scope filtering"},
                 },
                 "required": ["question"],
             },
@@ -93,6 +97,7 @@ async def list_tools() -> list[Tool]:
                              "description": "Entity type to store"},
                     "content": {"type": "object", "description": "Entity-specific fields"},
                     "project_id": {"type": "string", "description": "Project ID"},
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
                 },
                 "required": ["type", "content"],
             },
@@ -105,6 +110,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "proposed_plan": {"type": "string", "description": "The plan to review"},
                     "project_id": {"type": "string", "description": "Project ID"},
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
+                    "task_context": {"type": "string", "description": "Current task context for scope filtering"},
                 },
                 "required": ["proposed_plan"],
             },
@@ -117,6 +124,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "time_range": {"type": "string", "description": "Time range (e.g. 'last 30 days')"},
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
                 },
                 "required": ["project_id"],
             },
@@ -126,7 +134,9 @@ async def list_tools() -> list[Tool]:
             description="Get overview of all active projects with recent activity summary and entity counts.",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "session_id": {"type": "string", "description": "Session ID for topic tracking"},
+                },
             },
         ),
     ]
@@ -141,12 +151,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     from memory_core.llm import get_llm_complete
     llm = get_llm_complete()
 
+    session_id = arguments.get("session_id", "")
+    task_context = arguments.get("task_context", "")
+
     if name == "ceo_brief":
         from memory_core.ceo_skills import ceo_brief
         result = await asyncio.to_thread(
             ceo_brief, ceo_db, emb,
             project_id=arguments.get("project_id", ""),
             query=arguments.get("query", ""),
+            session_id=session_id,
+            task_context=task_context,
         )
         return _json_text(result)
 
@@ -158,6 +173,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             options=arguments.get("options"),
             context=arguments.get("context", ""),
             project_id=arguments.get("project_id", ""),
+            session_id=session_id,
+            task_context=task_context,
         )
         return _json_text(result)
 
@@ -168,6 +185,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             entity_type=arguments["type"],
             content=arguments["content"],
             project_id=arguments.get("project_id", ""),
+            session_id=session_id,
         )
         return _json_text(result)
 
@@ -177,6 +195,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             ceo_review, ceo_db, emb, llm,
             proposed_plan=arguments["proposed_plan"],
             project_id=arguments.get("project_id", ""),
+            session_id=session_id,
+            task_context=task_context,
         )
         return _json_text(result)
 
@@ -186,12 +206,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             ceo_retro, ceo_db, emb, llm,
             project_id=arguments["project_id"],
             time_range=arguments.get("time_range", ""),
+            session_id=session_id,
         )
         return _json_text(result)
 
     if name == "ceo_portfolio":
         from memory_core.ceo_skills import ceo_portfolio
-        result = await asyncio.to_thread(ceo_portfolio, ceo_db, emb)
+        result = await asyncio.to_thread(
+            ceo_portfolio, ceo_db, emb,
+            session_id=session_id,
+        )
         return _json_text(result)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]

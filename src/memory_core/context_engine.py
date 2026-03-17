@@ -15,6 +15,7 @@ def build_ceo_context(
     agent_source: str = "",
     task_hint: str = "",
     max_tokens: int = 1700,
+    session_id: str = "",
 ) -> str:
     """Assemble CEO context for injection.
 
@@ -43,7 +44,7 @@ def build_ceo_context(
     # 2. Principles (global + project-specific)
     principles_budget = min(1200, chars_remaining)
     if principles_budget > 50:
-        principles = _fetch_principles(ceo_db, project_id, principles_budget)
+        principles = _fetch_principles(ceo_db, project_id, principles_budget, emb=emb, session_id=session_id)
         if principles:
             sections.append(principles)
             chars_remaining -= len(principles)
@@ -98,8 +99,8 @@ def _format_project(project) -> str:
     return "\n".join(lines)
 
 
-def _fetch_principles(ceo_db: CeoDB, project_id: str, budget: int) -> str:
-    """Fetch global + project principles, sorted by confidence."""
+def _fetch_principles(ceo_db: CeoDB, project_id: str, budget: int, emb=None, session_id: str = "") -> str:
+    """Fetch global + project principles, sorted by confidence with scope awareness."""
     all_principles = []
 
     # Global principles
@@ -121,6 +122,17 @@ def _fetch_principles(ceo_db: CeoDB, project_id: str, budget: int) -> str:
         if p.id not in seen:
             seen.add(p.id)
             unique.append(p)
+
+    # When session topic exists, reorder by scope relevance
+    if session_id:
+        from memory_core.session_context import get_session_store
+        from memory_core.ceo_retrieval import _scope_score
+        topic_vec = get_session_store().get_topic_embedding(session_id)
+        if topic_vec:
+            def _sort_key(p):
+                scope_mult = _scope_score(p.scope_embedding, topic_vec, topic_vec, None)
+                return -(p.confidence * scope_mult)
+            unique.sort(key=_sort_key)
 
     lines = ["## Principles"]
     chars = len(lines[0])

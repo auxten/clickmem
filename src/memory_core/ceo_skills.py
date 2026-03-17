@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import TYPE_CHECKING, Callable, Optional
 
 from memory_core.ceo_retrieval import ceo_search
@@ -17,7 +18,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def ceo_brief(ceo_db: CeoDB, emb, project_id: str = "", query: str = "") -> dict:
+def _compute_scope_embedding(emb, scope_strings: list[str]) -> list[float] | None:
+    """Compute centroid embedding from a list of scope strings."""
+    if not scope_strings or not emb:
+        return None
+    vecs = [emb.encode_document(s) for s in scope_strings]
+    if not vecs:
+        return None
+    dim = len(vecs[0])
+    centroid = [0.0] * dim
+    for v in vecs:
+        for i in range(dim):
+            centroid[i] += v[i]
+    n = len(vecs)
+    centroid = [x / n for x in centroid]
+    # L2-normalize
+    norm = math.sqrt(sum(x * x for x in centroid))
+    if norm > 1e-10:
+        centroid = [x / norm for x in centroid]
+    return centroid
+
+
+def ceo_brief(
+    ceo_db: CeoDB, emb, project_id: str = "", query: str = "",
+    session_id: str = "", task_context: str = "",
+) -> dict:
     """Detailed project briefing. More detailed than context injection."""
     result: dict = {}
 
@@ -60,7 +85,10 @@ def ceo_brief(ceo_db: CeoDB, emb, project_id: str = "", query: str = "") -> dict
 
     # Semantic search if query provided
     if query:
-        search_results = ceo_search(ceo_db, emb, query, project_id=project_id, top_k=5)
+        search_results = ceo_search(
+            ceo_db, emb, query, project_id=project_id, top_k=5,
+            session_id=session_id or None, task_context=task_context or None,
+        )
         result["query_results"] = search_results
 
     return result
@@ -74,18 +102,22 @@ def ceo_decide(
     options: list[str] | None = None,
     context: str = "",
     project_id: str = "",
+    session_id: str = "",
+    task_context: str = "",
 ) -> dict:
     """Decision support with historical context."""
     # Find related decisions
     related = ceo_search(
         ceo_db, emb, question,
         project_id=project_id, entity_types=["decisions"], top_k=5,
+        session_id=session_id or None, task_context=task_context or None,
     )
 
     # Find relevant principles
     principles = ceo_search(
         ceo_db, emb, question,
         project_id=project_id, entity_types=["principles"], top_k=5,
+        session_id=session_id or None, task_context=task_context or None,
     )
 
     result = {
@@ -115,7 +147,7 @@ def ceo_decide(
             f"Related past decisions:\n{dec_text or '(none)'}\n\n"
             f"Relevant principles:\n{prin_text or '(none)'}\n\n"
             f"Provide a recommendation as JSON: "
-            f'{{\"recommendation\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}'
+            f'{{"recommendation": "...", "confidence": 0.0-1.0, "reasoning": "..."}}'
         )
 
         try:
@@ -136,11 +168,23 @@ def ceo_remember(
     entity_type: str,
     content: dict,
     project_id: str = "",
+    session_id: str = "",
 ) -> dict:
     """Structured memory storage for a specific entity type."""
     from memory_core.models import Decision, Episode, Principle
 
+    # Update session topic if session_id provided
+    if session_id and emb:
+        from memory_core.session_context import get_session_store
+        store = get_session_store()
+        summary = content.get("title", "") or content.get("content", "")
+        if summary:
+            vec = emb.encode_query(summary[:500])
+            store.update(session_id, vec, summary)
+
     if entity_type == "decision":
+        activation_scope = content.get("activation_scope", [])
+        scope_emb = _compute_scope_embedding(emb, activation_scope) if activation_scope else None
         d = Decision(
             project_id=project_id,
             title=content.get("title", ""),
@@ -149,6 +193,8 @@ def ceo_remember(
             reasoning=content.get("reasoning", ""),
             alternatives=content.get("alternatives", ""),
             domain=content.get("domain", "tech"),
+            activation_scope=activation_scope,
+            scope_embedding=scope_emb,
         )
         embed_text = f"{d.title} {d.choice} {d.reasoning}"
         d.embedding = emb.encode_document(embed_text)
@@ -156,12 +202,16 @@ def ceo_remember(
         return {"id": did, "type": "decision", "status": "stored"}
 
     elif entity_type == "principle":
+        activation_scope = content.get("activation_scope", [])
+        scope_emb = _compute_scope_embedding(emb, activation_scope) if activation_scope else None
         p = Principle(
             project_id=project_id,
             content=content.get("content", ""),
             domain=content.get("domain", "tech"),
             confidence=float(content.get("confidence", 0.7)),
             evidence_count=1,
+            activation_scope=activation_scope,
+            scope_embedding=scope_emb,
         )
         p.embedding = emb.encode_document(p.content)
         pid = ceo_db.insert_principle(p)
@@ -188,16 +238,20 @@ def ceo_review(
     llm_complete: Callable[[str], str] | None,
     proposed_plan: str,
     project_id: str = "",
+    session_id: str = "",
+    task_context: str = "",
 ) -> dict:
     """Consistency check against principles and past decisions."""
     # Find relevant principles and decisions
     principles = ceo_search(
         ceo_db, emb, proposed_plan,
         project_id=project_id, entity_types=["principles"], top_k=5,
+        session_id=session_id or None, task_context=task_context or None,
     )
     decisions = ceo_search(
         ceo_db, emb, proposed_plan,
         project_id=project_id, entity_types=["decisions"], top_k=5,
+        session_id=session_id or None, task_context=task_context or None,
     )
 
     result = {
@@ -239,6 +293,7 @@ def ceo_retro(
     llm_complete: Callable[[str], str] | None,
     project_id: str,
     time_range: str = "",
+    session_id: str = "",
 ) -> dict:
     """Retrospective: summarise decisions, identify patterns, suggest principles."""
     decisions = ceo_db.list_decisions(project_id=project_id, limit=20)
@@ -281,7 +336,7 @@ def ceo_retro(
     return result
 
 
-def ceo_portfolio(ceo_db: CeoDB, emb) -> dict:
+def ceo_portfolio(ceo_db: CeoDB, emb, session_id: str = "") -> dict:
     """Cross-project overview: all active projects with recent activity."""
     projects = ceo_db.list_projects()
 

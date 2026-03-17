@@ -106,6 +106,16 @@ class CeoDB:
         self._session.query(_CREATE_DECISIONS)
         self._session.query(_CREATE_PRINCIPLES)
         self._session.query(_CREATE_EPISODES)
+        # DDL migration: add activation_scope + scope_embedding columns
+        for tbl in ("decisions", "principles"):
+            self._session.query(
+                f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS "
+                f"activation_scope Array(String) DEFAULT []"
+            )
+            self._session.query(
+                f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS "
+                f"scope_embedding Array(Float32) DEFAULT []"
+            )
 
     # -- internal helpers --------------------------------------------------
 
@@ -245,11 +255,13 @@ class CeoDB:
         created = decision.created_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if decision.created_at else now
         updated = decision.updated_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if decision.updated_at else now
         emb = self._float_array_literal(decision.embedding) if decision.embedding else "[]"
+        scope_emb = self._float_array_literal(decision.scope_embedding) if decision.scope_embedding else "[]"
 
         sql = (
             f"INSERT INTO decisions (id, project_id, title, context, choice, "
             f"reasoning, alternatives, outcome, outcome_status, domain, "
-            f"tags, source_episodes, embedding, created_at, updated_at) VALUES "
+            f"tags, source_episodes, activation_scope, embedding, scope_embedding, "
+            f"created_at, updated_at) VALUES "
             f"('{self._escape(decision.id)}', '{self._escape(decision.project_id)}', "
             f"'{self._escape(decision.title)}', '{self._escape(decision.context)}', "
             f"'{self._escape(decision.choice)}', '{self._escape(decision.reasoning)}', "
@@ -257,7 +269,8 @@ class CeoDB:
             f"'{self._escape(decision.outcome_status)}', '{self._escape(decision.domain)}', "
             f"{self._array_literal(decision.tags)}, "
             f"{self._array_literal(decision.source_episodes)}, "
-            f"{emb}, '{created}', '{updated}')"
+            f"{self._array_literal(decision.activation_scope)}, "
+            f"{emb}, {scope_emb}, '{created}', '{updated}')"
         )
         self._session.query(sql)
         return decision.id
@@ -331,7 +344,9 @@ class CeoDB:
             domain=row.get("domain", "tech"),
             tags=row.get("tags", []),
             source_episodes=row.get("source_episodes", []),
+            activation_scope=row.get("activation_scope", []),
             embedding=row.get("embedding"),
+            scope_embedding=row.get("scope_embedding") or None,
             created_at=_parse_dt(row.get("created_at")),
             updated_at=_parse_dt(row.get("updated_at")),
         )
@@ -345,17 +360,19 @@ class CeoDB:
         created = principle.created_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if principle.created_at else now
         updated = principle.updated_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] if principle.updated_at else now
         emb = self._float_array_literal(principle.embedding) if principle.embedding else "[]"
+        scope_emb = self._float_array_literal(principle.scope_embedding) if principle.scope_embedding else "[]"
         is_active = 1 if principle.is_active else 0
 
         sql = (
             f"INSERT INTO principles (id, project_id, content, domain, confidence, "
-            f"evidence_count, source_decisions, embedding, is_active, "
-            f"created_at, updated_at) VALUES "
+            f"evidence_count, source_decisions, activation_scope, embedding, scope_embedding, "
+            f"is_active, created_at, updated_at) VALUES "
             f"('{self._escape(principle.id)}', '{self._escape(principle.project_id)}', "
             f"'{self._escape(principle.content)}', '{self._escape(principle.domain)}', "
             f"{principle.confidence}, {principle.evidence_count}, "
             f"{self._array_literal(principle.source_decisions)}, "
-            f"{emb}, {is_active}, '{created}', '{updated}')"
+            f"{self._array_literal(principle.activation_scope)}, "
+            f"{emb}, {scope_emb}, {is_active}, '{created}', '{updated}')"
         )
         self._session.query(sql)
         return principle.id
@@ -437,7 +454,9 @@ class CeoDB:
             confidence=float(row.get("confidence", 0.5)),
             evidence_count=int(row.get("evidence_count", 0)),
             source_decisions=row.get("source_decisions", []),
+            activation_scope=row.get("activation_scope", []),
             embedding=row.get("embedding"),
+            scope_embedding=row.get("scope_embedding") or None,
             is_active=bool(int(row.get("is_active", 1))),
             created_at=_parse_dt(row.get("created_at")),
             updated_at=_parse_dt(row.get("updated_at")),

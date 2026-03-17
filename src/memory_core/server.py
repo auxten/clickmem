@@ -424,9 +424,24 @@ async def _cc_stop(payload: dict) -> dict:
 
 
 async def _cc_session_end(payload: dict) -> dict:
-    """Clean up prompt buffer and run lightweight maintenance."""
+    """Clean up prompt buffer, session context, and run lightweight maintenance."""
     session_id = payload.get("session_id", "")
     _cc_prompt_buffers.pop(session_id, None)
+
+    # Clean up session context
+    if session_id:
+        try:
+            from memory_core.session_context import get_session_store
+            get_session_store().remove(session_id)
+        except Exception:
+            pass
+
+    # Clean up expired sessions
+    try:
+        from memory_core.session_context import get_session_store
+        get_session_store().cleanup_expired()
+    except Exception:
+        pass
 
     t = _get_transport()
     try:

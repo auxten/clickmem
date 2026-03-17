@@ -36,11 +36,13 @@ Possible types:
 2. **decision** — A decision that was made or discussed:
    {{"type": "decision", "title": "short title", "context": "why this came up", \
 "choice": "what was decided", "reasoning": "why this choice", \
-"alternatives": "what else was considered", "domain": "tech|product|design|marketing|ops"}}
+"alternatives": "what else was considered", "domain": "tech|product|design|marketing|ops", \
+"activation_scope": ["scope1", "scope2"]}}
 
 3. **principle** — A reusable rule, preference, or guideline revealed:
    {{"type": "principle", "content": "the principle statement", \
-"domain": "tech|product|design|marketing|ops|management", "confidence": 0.5-1.0}}
+"domain": "tech|product|design|marketing|ops|management", "confidence": 0.5-1.0, \
+"activation_scope": ["scope1", "scope2"]}}
    Only extract principles with confidence >= 0.6. Be conservative.
 
 4. **project_update** — An update to the current project's metadata:
@@ -58,6 +60,9 @@ The real decision is what was approved and why — extract that substance.
 Prioritise episodes that show user intent, unexpected outcomes, or pivots.
 - Principles must be genuinely reusable across projects. \
 Do not extract principles that merely restate the conversation's specific instructions.
+- activation_scope describes the TYPE of task where this applies.
+  Examples: ["产品功能设计", "API design"], ["debugging", "performance tuning"].
+  Leave empty [] if universal.
 - Return ONLY the JSON array, no other text.
 
 ---
@@ -202,6 +207,12 @@ class CEOExtractor:
         if choice.strip().upper() in self._TRIVIAL_CHOICES:
             return None
 
+        activation_scope = item.get("activation_scope", [])
+        scope_embedding = None
+        if activation_scope and self._emb:
+            from memory_core.ceo_skills import _compute_scope_embedding
+            scope_embedding = _compute_scope_embedding(self._emb, activation_scope)
+
         d = Decision(
             project_id=project_id,
             title=title,
@@ -210,6 +221,8 @@ class CEOExtractor:
             reasoning=item.get("reasoning", ""),
             alternatives=item.get("alternatives", ""),
             domain=item.get("domain", "tech"),
+            activation_scope=activation_scope,
+            scope_embedding=scope_embedding,
         )
         embed_text = f"{title} {choice} {d.reasoning}"
         if self._emb:
@@ -232,12 +245,21 @@ class CEOExtractor:
         confidence = float(item.get("confidence", 0.5))
         if not content or confidence < 0.6:
             return None
+
+        activation_scope = item.get("activation_scope", [])
+        scope_embedding = None
+        if activation_scope and self._emb:
+            from memory_core.ceo_skills import _compute_scope_embedding
+            scope_embedding = _compute_scope_embedding(self._emb, activation_scope)
+
         p = Principle(
             project_id=project_id,
             content=content,
             domain=item.get("domain", "tech"),
             confidence=confidence,
             evidence_count=1,
+            activation_scope=activation_scope,
+            scope_embedding=scope_embedding,
         )
         if self._emb:
             p.embedding = self._emb.encode_document(content)

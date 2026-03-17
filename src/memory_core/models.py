@@ -93,7 +93,9 @@ class Decision:
     domain: str = "tech"  # product | tech | design | marketing | ops
     tags: list[str] = field(default_factory=list)
     source_episodes: list[str] = field(default_factory=list)
+    activation_scope: list[str] = field(default_factory=list)  # free-text, e.g. ["产品功能设计", "架构决策"]
     embedding: Optional[list[float]] = None
+    scope_embedding: Optional[list[float]] = None  # centroid of activation_scope embeddings
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -109,7 +111,9 @@ class Principle:
     confidence: float = 0.5
     evidence_count: int = 0
     source_decisions: list[str] = field(default_factory=list)
+    activation_scope: list[str] = field(default_factory=list)
     embedding: Optional[list[float]] = None
+    scope_embedding: Optional[list[float]] = None
     is_active: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
