@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_str(val, sep="; "):
+    """Coerce LLM output to str — lists are joined, None becomes ''."""
+    if isinstance(val, list):
+        return sep.join(str(x) for x in val)
+    if not isinstance(val, str):
+        return str(val) if val is not None else ""
+    return val
+
 _CEO_EXTRACTION_PROMPT = """\
 You are the memory extraction engine for a solo CEO's knowledge system.
 Analyse the following conversation and extract structured knowledge items.
@@ -216,11 +225,11 @@ class CEOExtractor:
         d = Decision(
             project_id=project_id,
             title=title,
-            context=item.get("context", ""),
+            context=_ensure_str(item.get("context", "")),
             choice=choice,
-            reasoning=item.get("reasoning", ""),
-            alternatives=item.get("alternatives", ""),
-            domain=item.get("domain", "tech"),
+            reasoning=_ensure_str(item.get("reasoning", "")),
+            alternatives=_ensure_str(item.get("alternatives", "")),
+            domain=_ensure_str(item.get("domain", "tech")),
             activation_scope=activation_scope,
             scope_embedding=scope_embedding,
         )

@@ -191,7 +191,8 @@ class LocalLLMEngine:
             raw = self._generate_fn(prompt)
             elapsed = time.monotonic() - t0
             if elapsed > self._TIMEOUT:
-                logger.warning("LLM call took %.1fs (threshold %ds)", elapsed, self._TIMEOUT)
+                logger.warning("LLM call took %.1fs (threshold %ds), input_chars=%d",
+                               elapsed, self._TIMEOUT, len(prompt))
         return _strip_think_tags(raw).strip()
 
     # ------------------------------------------------------------------

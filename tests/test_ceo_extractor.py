@@ -87,3 +87,48 @@ class TestCEOExtractor:
         extractor = CEOExtractor(ceo_db, mock_emb)
         result = extractor.extract("CEO extraction: test", failing_llm)
         assert result.episode_ids == []
+
+    def test_decision_alternatives_as_list(self, ceo_db, mock_emb):
+        """Bug fix: LLM returns alternatives as list instead of string."""
+        def llm_list_alternatives(prompt):
+            return json.dumps([{
+                "type": "decision",
+                "title": "Use PostgreSQL",
+                "context": "Need relational DB",
+                "choice": "PostgreSQL",
+                "reasoning": ["Fast", "Reliable"],
+                "alternatives": ["MySQL", "SQLite"],
+                "domain": "tech",
+            }])
+
+        extractor = CEOExtractor(ceo_db, mock_emb)
+        result = extractor.extract(
+            "CEO extraction: database decision",
+            llm_list_alternatives,
+            project_id="proj1",
+        )
+        assert len(result.decision_ids) == 1
+        # Verify it was stored (no crash from list.replace())
+        counts = ceo_db.count_all()
+        assert counts["decisions"] >= 1
+
+    def test_decision_reasoning_as_list(self, ceo_db, mock_emb):
+        """Bug fix: LLM returns reasoning as list instead of string."""
+        def llm_list_reasoning(prompt):
+            return json.dumps([{
+                "type": "decision",
+                "title": "Use Redis for caching",
+                "context": "Need fast cache",
+                "choice": "Redis",
+                "reasoning": ["Low latency", "Built-in TTL"],
+                "alternatives": "Memcached",
+                "domain": "tech",
+            }])
+
+        extractor = CEOExtractor(ceo_db, mock_emb)
+        result = extractor.extract(
+            "CEO extraction: cache decision",
+            llm_list_reasoning,
+            project_id="proj1",
+        )
+        assert len(result.decision_ids) == 1

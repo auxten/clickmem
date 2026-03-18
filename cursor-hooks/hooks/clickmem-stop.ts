@@ -77,7 +77,7 @@ function parseTranscript(path: string): string {
 
       const textParts = contents
         .filter((c: any) => c.type === "text" && c.text)
-        .map((c: any) => c.text as string);
+        .map((c: any) => typeof c.text === "string" ? c.text : JSON.stringify(c.text));
       if (textParts.length === 0) continue;
 
       let text = textParts.join("\n");

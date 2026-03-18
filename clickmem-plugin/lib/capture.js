@@ -10,6 +10,22 @@ function getLastTurn(messages) {
   return last;
 }
 
+function contentToString(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const texts = content
+      .filter(c => c && c.type === "text" && c.text)
+      .map(c => String(c.text));
+    if (texts.length > 0) return texts.join("\n");
+    try { return JSON.stringify(content); } catch { return ""; }
+  }
+  if (content && typeof content === "object") {
+    if (typeof content.text === "string") return content.text;
+    try { return JSON.stringify(content); } catch { return ""; }
+  }
+  return content != null ? String(content) : "";
+}
+
 export function buildCaptureHandler(cfg, run) {
   return async (event, ctx) => {
     if (!event?.success || !event?.messages?.length) return;
@@ -20,7 +36,7 @@ export function buildCaptureHandler(cfg, run) {
     const lastTurn = getLastTurn(event.messages);
     if (!lastTurn.length) return;
 
-    const text = lastTurn.map(m => `${m.role}: ${m.content}`).join("\n");
+    const text = lastTurn.map(m => `${m.role}: ${contentToString(m.content)}`).join("\n");
     if (text.length < 20) {
       console.log("[clickmem] capture skipped: text too short (%d chars)", text.length);
       return;

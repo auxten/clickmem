@@ -20,6 +20,11 @@ from memory_core.transport import LocalTransport
 
 _log = logging.getLogger("clickmem.server")
 
+
+class _McpInitFilter(logging.Filter):
+    def filter(self, record):
+        return "Received request before initialization" not in record.getMessage()
+
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
@@ -486,10 +491,16 @@ def _build_combined_app():
 
         path = scope.get("path", "")
         if path == "/sse":
-            async with sse_transport.connect_sse(scope, receive, send) as streams:
-                await mcp_server.run(streams[0], streams[1], init_options)
+            try:
+                async with sse_transport.connect_sse(scope, receive, send) as streams:
+                    await mcp_server.run(streams[0], streams[1], init_options)
+            except Exception:
+                pass  # Client disconnected
         elif path.startswith("/messages"):
-            await sse_transport.handle_post_message(scope, receive, send)
+            try:
+                await sse_transport.handle_post_message(scope, receive, send)
+            except Exception:
+                pass  # Client disconnected
         else:
             await rest_app(scope, receive, send)
 
@@ -522,6 +533,8 @@ def run_server(host: str | None = None, port: int | None = None, debug: bool = F
             print(f"mDNS: registered clickmem at {local_ip}:{port}")
         except Exception as e:
             print(f"mDNS registration skipped: {e}")
+
+    logging.getLogger("root").addFilter(_McpInitFilter())
 
     try:
         uvicorn.run(asgi_app, host=host, port=port, log_level="info")
