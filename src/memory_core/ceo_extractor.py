@@ -52,11 +52,15 @@ Possible types:
    {{"type": "principle", "content": "the principle statement", \
 "domain": "tech|product|design|marketing|ops|management", "confidence": 0.5-1.0, \
 "activation_scope": ["scope1", "scope2"]}}
-   Only extract principles with confidence >= 0.6. Be conservative.
+   Only extract principles with confidence >= 0.7. Be very conservative.
 
 4. **project_update** — An update to the current project's metadata:
    {{"type": "project_update", "field": "status|vision|target_users|north_star_metric|description", \
 "new_value": "..."}}
+
+5. **project_hint** — If the conversation clearly discusses a specific project \
+different from what the working directory suggests:
+   {{"type": "project_hint", "project_name": "the actual project being discussed"}}
 
 Rules:
 - Prefer fewer, higher-quality extractions over many low-quality ones.
@@ -67,8 +71,11 @@ extract the underlying product or tech decision, not the approval action itself.
 The real decision is what was approved and why — extract that substance.
 - Each episode should capture WHAT happened and WHY, not just list actions. \
 Prioritise episodes that show user intent, unexpected outcomes, or pivots.
-- Principles must be genuinely reusable across projects. \
-Do not extract principles that merely restate the conversation's specific instructions.
+- Principles must pass the "would I tell this to a new team member" test. \
+Do NOT extract: basic language syntax everyone knows, common best practices, \
+one-time operational instructions, or project-specific URLs/paths. \
+A good principle is a LESSON LEARNED from experience, not a textbook fact. \
+Extract at most 2 principles per conversation.
 - activation_scope describes the TYPE of task where this applies.
   Examples: ["产品功能设计", "API design"], ["debugging", "performance tuning"].
   Leave empty [] if universal.
@@ -150,30 +157,49 @@ class CEOExtractor:
         if not items:
             return
 
+        # Check for project_hint — override project_id if LLM detects
+        # the conversation is about a different project than the CWD.
+        effective_project_id = project_id
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "project_hint":
+                hint_name = item.get("project_name", "")
+                if hint_name:
+                    projects = self._db.list_projects()
+                    for p in projects:
+                        if p.name and p.name.lower() == hint_name.lower():
+                            logger.info(
+                                "project_hint: overriding project_id from %s to %s (%s)",
+                                project_id[:8] if project_id else "none",
+                                p.id[:8], p.name,
+                            )
+                            effective_project_id = p.id
+                            break
+
         for item in items:
             if not isinstance(item, dict):
                 continue
             item_type = item.get("type", "")
             try:
                 if item_type == "episode":
-                    eid = self._process_episode(item, project_id, session_id, agent_source, raw_id)
+                    eid = self._process_episode(item, effective_project_id, session_id, agent_source, raw_id)
                     if eid:
                         result.episode_ids.append(eid)
                 elif item_type == "decision":
-                    did = self._process_decision(item, project_id)
+                    did = self._process_decision(item, effective_project_id)
                     if did:
                         result.decision_ids.append(did)
                 elif item_type == "principle":
-                    pid = self._process_principle(item, project_id)
+                    pid = self._process_principle(item, effective_project_id)
                     if pid:
                         result.principle_ids.append(pid)
                 elif item_type == "project_update":
                     result.project_updates.append(item)
-                    if project_id:
+                    if effective_project_id:
                         field_name = item.get("field", "")
                         new_value = item.get("new_value", "")
                         if field_name and new_value:
-                            self._db.update_project(project_id, **{field_name: new_value})
+                            self._db.update_project(effective_project_id, **{field_name: new_value})
+                # project_hint already handled above
             except Exception as e:
                 logger.warning("Failed to process extracted item %s: %s", item_type, e)
 
@@ -252,7 +278,7 @@ class CEOExtractor:
     def _process_principle(self, item: dict, project_id: str) -> str | None:
         content = item.get("content", "")
         confidence = float(item.get("confidence", 0.5))
-        if not content or confidence < 0.6:
+        if not content or confidence < 0.7:
             return None
 
         activation_scope = item.get("activation_scope", [])

@@ -57,6 +57,7 @@ class IngestRequest(BaseModel):
     text: str
     session_id: str = ""
     source: str = "cursor"
+    cwd: str = ""
 
 
 class MaintainRequest(BaseModel):
@@ -195,7 +196,8 @@ async def extract(req: ExtractRequest):
 async def ingest(req: IngestRequest):
     t = _get_transport()
     return await asyncio.to_thread(
-        t.ingest, text=req.text, session_id=req.session_id, source=req.source,
+        t.ingest, text=req.text, session_id=req.session_id,
+        source=req.source, cwd=req.cwd,
     )
 
 

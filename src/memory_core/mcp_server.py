@@ -139,6 +139,20 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="ceo_update_outcome",
+            description="Update a decision's outcome status (validated, invalidated, or unknown).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "decision_id": {"type": "string", "description": "Decision ID to update"},
+                    "outcome_status": {"type": "string", "enum": ["validated", "invalidated", "unknown"],
+                                       "description": "New outcome status"},
+                    "outcome": {"type": "string", "description": "Optional description of the outcome"},
+                },
+                "required": ["decision_id", "outcome_status"],
+            },
+        ),
     ]
 
 
@@ -215,6 +229,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await asyncio.to_thread(
             ceo_portfolio, ceo_db, emb,
             session_id=session_id,
+        )
+        return _json_text(result)
+
+    if name == "ceo_update_outcome":
+        from memory_core.ceo_skills import ceo_update_outcome
+        result = await asyncio.to_thread(
+            ceo_update_outcome, ceo_db,
+            decision_id=arguments["decision_id"],
+            outcome_status=arguments["outcome_status"],
+            outcome=arguments.get("outcome", ""),
         )
         return _json_text(result)
 

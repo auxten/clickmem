@@ -220,19 +220,12 @@ class LocalTransport:
         # Step 2: Store raw transcript
         raw_id = db.insert_raw(session_id, source, text)
 
-        # Step 3: Detect project (or auto-create from cwd)
+        # Step 3: Detect project (auto-create from cwd if no match)
         from memory_core.project_detect import detect_project
-        project_id = detect_project(ceo_db, cwd=cwd, content=filtered, emb=emb)
-
-        if not project_id and cwd:
-            project_name = os.path.basename(cwd)
-            if project_name and len(project_name) > 1 and project_name not in (".", "/", "tmp"):
-                from memory_core.models import Project
-                p = Project(name=project_name, repo_url=cwd, status="building")
-                if emb:
-                    p.embedding = emb.encode_document(project_name)
-                project_id = ceo_db.insert_project(p)
-                _log.info("Auto-created project '%s' from cwd %s", project_name, cwd)
+        project_id = detect_project(
+            ceo_db, cwd=cwd, content=filtered, emb=emb,
+            allow_auto_create=True,
+        )
 
         # Step 4: CEO extraction
         from memory_core.llm import get_llm_complete

@@ -1484,3 +1484,116 @@ def principles_cmd(
     for p in principles:
         table.add_row(f"{p.confidence:.0%}", p.content[:60], str(p.evidence_count), p.domain)
     console.print(table)
+
+
+@app.command(name="prune-principles")
+def prune_principles_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, don't deactivate"),
+    project_id: Optional[str] = typer.Option(None, "--project-id", "-p", help="Filter by project"),
+    min_age_days: int = typer.Option(30, "--min-age-days", help="Minimum age in days"),
+):
+    """Prune weak principles (evidence<=1, confidence<0.75, old)."""
+    from memory_core.ceo_maintenance import CEOMaintenance
+    ceo_db = _get_ceo_db()
+    pruned = CEOMaintenance.prune_weak_principles(
+        ceo_db, min_age_days=min_age_days, dry_run=dry_run,
+        project_id=project_id,
+    )
+    action = "Would prune" if dry_run else "Pruned"
+    console.print(f"[bold]{action} {len(pruned)} principles[/bold]")
+    if pruned:
+        table = Table()
+        table.add_column("ID", style="dim")
+        table.add_column("Content")
+        table.add_column("Conf", justify="right")
+        table.add_column("Ev", justify="right")
+        table.add_column("Age", justify="right")
+        for p in pruned[:20]:
+            table.add_row(p["id"][:8], p["content"], f"{p['confidence']:.0%}", str(p["evidence_count"]), f"{p['age_days']}d")
+        console.print(table)
+        if len(pruned) > 20:
+            console.print(f"[dim]... and {len(pruned) - 20} more[/dim]")
+
+
+@app.command(name="update-outcome")
+def update_outcome_cmd(
+    decision_id: str = typer.Argument(..., help="Decision ID"),
+    status: str = typer.Option(..., "--status", "-s", help="validated|invalidated|unknown"),
+    outcome: str = typer.Option("", "--outcome", "-o", help="Description of outcome"),
+):
+    """Update a decision's outcome status."""
+    from memory_core.ceo_skills import ceo_update_outcome
+    ceo_db = _get_ceo_db()
+    result = ceo_update_outcome(ceo_db, decision_id, status, outcome)
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Updated '{result['title']}': {result['old_status']} → {result['new_status']}[/green]")
+
+
+@app.command(name="update-project")
+def update_project_cmd(
+    project_id: str = typer.Argument(..., help="Project ID"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="New status"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="New description"),
+    vision: Optional[str] = typer.Option(None, "--vision", "-v", help="New vision"),
+):
+    """Update project metadata."""
+    ceo_db = _get_ceo_db()
+    p = ceo_db.get_project(project_id)
+    if not p:
+        console.print(f"[red]Project '{project_id}' not found[/red]")
+        raise typer.Exit(1)
+    fields = {}
+    if status is not None:
+        fields["status"] = status
+    if description is not None:
+        fields["description"] = description
+    if vision is not None:
+        fields["vision"] = vision
+    if not fields:
+        console.print("[yellow]No fields to update[/yellow]")
+        return
+    ceo_db.update_project(project_id, **fields)
+    console.print(f"[green]Updated project '{p.name}': {', '.join(fields.keys())}[/green]")
+
+
+@app.command(name="reassign")
+def reassign_cmd(
+    entity_type: str = typer.Argument(..., help="Entity type: decision|principle|episode"),
+    entity_id: str = typer.Argument(..., help="Entity ID"),
+    to_project: str = typer.Option(..., "--to-project", "-t", help="Target project ID"),
+):
+    """Reassign an entity to a different project."""
+    ceo_db = _get_ceo_db()
+    valid_types = {"decision", "principle", "episode"}
+    if entity_type not in valid_types:
+        console.print(f"[red]Invalid type '{entity_type}'. Must be one of {valid_types}[/red]")
+        raise typer.Exit(1)
+
+    if entity_type == "decision":
+        d = ceo_db.get_decision(entity_id)
+        if not d:
+            console.print(f"[red]Decision '{entity_id}' not found[/red]")
+            raise typer.Exit(1)
+        ceo_db.update_decision(entity_id, project_id=to_project)
+        console.print(f"[green]Reassigned decision '{d.title}' → project {to_project[:8]}[/green]")
+    elif entity_type == "principle":
+        p = ceo_db.get_principle(entity_id)
+        if not p:
+            console.print(f"[red]Principle '{entity_id}' not found[/red]")
+            raise typer.Exit(1)
+        ceo_db.update_principle(entity_id, project_id=to_project)
+        console.print(f"[green]Reassigned principle '{p.content[:40]}' → project {to_project[:8]}[/green]")
+    elif entity_type == "episode":
+        # Episodes use MergeTree, so we need ALTER TABLE DELETE + re-insert
+        episodes = ceo_db.list_episodes(limit=1000)
+        ep = next((e for e in episodes if e.id == entity_id), None)
+        if not ep:
+            console.print(f"[red]Episode '{entity_id}' not found[/red]")
+            raise typer.Exit(1)
+        # Delete and re-insert with new project_id
+        ceo_db._session.query(f"ALTER TABLE episodes DELETE WHERE id = '{ceo_db._escape(entity_id)}'")
+        ep.project_id = to_project
+        ceo_db.insert_episode(ep)
+        console.print(f"[green]Reassigned episode '{entity_id[:8]}' → project {to_project[:8]}[/green]")

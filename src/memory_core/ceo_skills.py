@@ -330,10 +330,66 @@ def ceo_retro(
             result["principle_candidates"] = parsed.get("principle_candidates", [])
             if parsed.get("summary"):
                 result["summary"] = parsed["summary"]
+
+            # Auto-update decision outcomes based on retro analysis
+            updated_ids = []
+            for status_key in ("validated", "invalidated"):
+                for title in parsed.get(status_key, []):
+                    if not title:
+                        continue
+                    # Fuzzy match: find the decision with the closest title
+                    title_lower = title.lower().strip()
+                    for d in decisions:
+                        if (
+                            d.outcome_status == "pending"
+                            and d.title.lower().strip() == title_lower
+                        ):
+                            ceo_db.update_decision(d.id, outcome_status=status_key)
+                            updated_ids.append(d.id)
+                            break
+            if updated_ids:
+                result["updated_decision_ids"] = updated_ids
+                logger.info("ceo_retro updated %d decision outcomes", len(updated_ids))
+
         except Exception as e:
             logger.warning("ceo_retro LLM failed: %s", e)
 
     return result
+
+
+def ceo_update_outcome(
+    ceo_db: CeoDB,
+    decision_id: str,
+    outcome_status: str,
+    outcome: str = "",
+) -> dict:
+    """Manually update a decision's outcome status.
+
+    Args:
+        decision_id: The decision to update.
+        outcome_status: One of "validated", "invalidated", "unknown".
+        outcome: Optional free-text description of the outcome.
+    """
+    valid = {"validated", "invalidated", "unknown", "pending"}
+    if outcome_status not in valid:
+        return {"error": f"Invalid status '{outcome_status}'. Must be one of {valid}"}
+
+    d = ceo_db.get_decision(decision_id)
+    if not d:
+        return {"error": f"Decision '{decision_id}' not found"}
+
+    fields = {"outcome_status": outcome_status}
+    if outcome:
+        fields["outcome"] = outcome
+    ceo_db.update_decision(decision_id, **fields)
+
+    return {
+        "id": decision_id,
+        "title": d.title,
+        "old_status": d.outcome_status,
+        "new_status": outcome_status,
+        "outcome": outcome,
+    }
 
 
 def ceo_portfolio(ceo_db: CeoDB, emb, session_id: str = "") -> dict:

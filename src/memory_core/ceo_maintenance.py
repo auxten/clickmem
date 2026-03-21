@@ -30,6 +30,9 @@ class CEOMaintenance:
             deduped = CEOMaintenance.dedup_principles(ceo_db, emb, llm_complete)
             result["principles_deduped"] = deduped
 
+            pruned = CEOMaintenance.prune_weak_principles(ceo_db)
+            result["principles_pruned"] = len(pruned)
+
         if llm_complete:
             promoted = CEOMaintenance.check_principle_promotion(ceo_db, llm_complete, emb)
             result["principles_promoted"] = promoted
@@ -79,8 +82,10 @@ class CEOMaintenance:
         return promoted
 
     @staticmethod
-    def validate_decision_outcomes(ceo_db: CeoDB, llm_complete: Callable) -> int:
-        """Review pending decisions older than 30 days."""
+    def validate_decision_outcomes(
+        ceo_db: CeoDB, llm_complete: Callable, emb=None,
+    ) -> int:
+        """Review pending decisions older than 30 days using semantic matching."""
         decisions = ceo_db.list_decisions(limit=50)
         validated = 0
         for d in decisions:
@@ -91,14 +96,81 @@ class CEOMaintenance:
             age_days = (datetime.now(timezone.utc) - d.created_at).total_seconds() / 86400
             if age_days < 30:
                 continue
-            # Check if recent episodes mention this decision's topic
-            episodes = ceo_db.list_episodes(project_id=d.project_id, limit=10)
-            if not episodes:
-                continue
-            # Simple heuristic: if recent episodes exist and decision is old, mark as unknown
-            ceo_db.update_decision(d.id, outcome_status="unknown")
-            validated += 1
+
+            # Try semantic matching: search episodes for this decision's topic
+            if emb and d.embedding:
+                related = ceo_db.search_episodes_by_vector(
+                    d.embedding, project_id=d.project_id, limit=5,
+                )
+                if related:
+                    # Ask LLM to judge the outcome
+                    ep_text = "\n".join(f"- {e.content[:150]}" for e in related[:3])
+                    prompt = (
+                        f"Decision: {d.title}\nChoice: {d.choice}\n\n"
+                        f"Recent related activity:\n{ep_text}\n\n"
+                        f"Based on the activity, was this decision validated (worked well), "
+                        f"invalidated (caused problems), or unknown (insufficient evidence)?\n"
+                        f"Respond with one word: validated, invalidated, or unknown"
+                    )
+                    try:
+                        answer = llm_complete(prompt).strip().lower()
+                        if answer in ("validated", "invalidated"):
+                            ceo_db.update_decision(d.id, outcome_status=answer)
+                            validated += 1
+                            continue
+                    except Exception:
+                        pass
+
+            # Fallback: mark as unknown for very old pending decisions
+            if age_days > 90:
+                ceo_db.update_decision(d.id, outcome_status="unknown")
+                validated += 1
         return validated
+
+    @staticmethod
+    def prune_weak_principles(
+        ceo_db: CeoDB,
+        min_age_days: int = 30,
+        dry_run: bool = False,
+        project_id: str | None = None,
+    ) -> list[dict]:
+        """Deactivate principles with evidence_count<=1, confidence<0.75, age>min_age_days.
+
+        Returns list of pruned principle dicts for audit.
+        """
+        principles = ceo_db.list_principles(
+            project_id=project_id, active_only=True,
+        )
+        pruned: list[dict] = []
+        now = datetime.now(timezone.utc)
+
+        for p in principles:
+            if p.evidence_count > 1:
+                continue
+            if p.confidence >= 0.75:
+                continue
+            if not p.created_at:
+                continue
+            age_days = (now - p.created_at).total_seconds() / 86400
+            if age_days < min_age_days:
+                continue
+
+            entry = {
+                "id": p.id,
+                "content": p.content[:100],
+                "confidence": p.confidence,
+                "evidence_count": p.evidence_count,
+                "age_days": int(age_days),
+                "domain": p.domain,
+            }
+            pruned.append(entry)
+
+            if not dry_run:
+                ceo_db.update_principle(p.id, is_active=False)
+                logger.info("Pruned weak principle %s: %s", p.id[:8], p.content[:60])
+
+        logger.info("Pruned %d weak principles (dry_run=%s)", len(pruned), dry_run)
+        return pruned
 
     @staticmethod
     def dedup_principles(

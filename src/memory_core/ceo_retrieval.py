@@ -6,12 +6,16 @@ with entity-type-specific scoring adjustments and session-aware scope matching.
 
 from __future__ import annotations
 
+import logging
 import math
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memory_core.ceo_db import CeoDB
+
+logger = logging.getLogger(__name__)
 
 
 _SAME_PROJECT_BOOST = 1.3
@@ -91,6 +95,7 @@ def ceo_search(
     if not query or not query.strip():
         return []
 
+    t0 = time.monotonic()
     query_vec = emb.encode_query(query[:500])
     types = entity_types or ["decisions", "principles", "episodes"]
     results: list[dict] = []
@@ -212,8 +217,24 @@ def ceo_search(
     # Sort by score desc
     unique.sort(key=lambda x: x["score"], reverse=True)
 
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    logger.info(
+        "ceo_search query=%r project=%s results=%d top=%.3f ms=%.0f",
+        query[:60], project_id or "*", len(unique),
+        unique[0]["score"] if unique else 0.0, elapsed_ms,
+    )
+
+    # Optional JSONL recall logging
+    from memory_core.recall_logger import log_recall
+    final = _mmr_diverse(unique, top_k)
+    log_recall(
+        query=query, project_id=project_id or "",
+        session_id=session_id or "", results=final,
+        latency_ms=elapsed_ms,
+    )
+
     # MMR-style diversity: ensure we don't return too many of the same type
-    return _mmr_diverse(unique, top_k)
+    return final
 
 
 def _mmr_diverse(results: list[dict], top_k: int, type_limit: int = 0) -> list[dict]:
