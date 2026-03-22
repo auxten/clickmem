@@ -1,16 +1,17 @@
 """CEO Retrieval — cross-entity hybrid search for CEO Brain.
 
-Replaces retrieval.py. Searches across decisions, principles, and episodes
-with entity-type-specific scoring adjustments and session-aware scope matching.
+Replaces retrieval.py. Searches across decisions, principles, episodes, and facts
+with entity-type-specific scoring, keyword matching, and session-aware scope matching.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from memory_core.ceo_db import CeoDB
@@ -24,6 +25,51 @@ _OTHER_PROJECT_PENALTY = 0.6
 
 _SCOPE_MATCH_BOOST = 1.2
 _SCOPE_MISMATCH_PENALTY = 0.3
+
+# Keyword matching constants
+_KW_BONUS_WEIGHT = 0.3  # keyword bonus multiplier
+_KW_BONUS_CAP = 1.5  # max keyword boost
+_RRF_K = 60  # reciprocal rank fusion constant
+
+# CJK Unicode ranges for tokenization
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]+')
+_WORD_RE = re.compile(r'[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]')
+
+# Common stopwords (bilingual, small set)
+_STOPWORDS = frozenset({
+    "的", "是", "在", "了", "我", "我的", "你", "他", "她", "它", "们",
+    "这", "那", "什么", "怎么", "哪里", "哪个", "用", "和", "与",
+    "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
+    "to", "for", "of", "and", "or", "my", "your", "his", "her", "its",
+    "what", "which", "where", "how", "who", "do", "does", "did",
+})
+
+
+def _tokenize_query(query: str) -> list[str]:
+    """Extract searchable keywords from a query string.
+
+    Handles CJK characters (split into individual chars) and
+    Latin words. Filters stopwords and short tokens.
+    """
+    tokens = _WORD_RE.findall(query)
+    keywords = []
+    for t in tokens:
+        t_lower = t.lower()
+        if t_lower in _STOPWORDS:
+            continue
+        if len(t) == 1 and not _CJK_RE.match(t):
+            continue  # skip single ASCII chars
+        keywords.append(t)
+    return keywords
+
+
+def _keyword_score(content: str, keywords: list[str]) -> float:
+    """Fraction of query keywords found in content (case-insensitive)."""
+    if not keywords:
+        return 0.0
+    content_lower = content.lower()
+    hits = sum(1 for kw in keywords if kw.lower() in content_lower)
+    return hits / len(keywords)
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
@@ -227,13 +273,60 @@ def ceo_search(
                     },
                 })
 
-    # Deduplicate by id (global + project may overlap)
-    seen: set[str] = set()
-    unique: list[dict] = []
+    # ------------------------------------------------------------------
+    # Keyword search: find records matching query keywords
+    # ------------------------------------------------------------------
+    keywords = _tokenize_query(query)
+    kw_results: list[dict] = []
+    if keywords:
+        try:
+            kw_results = ceo_db.search_by_keywords(keywords, project_id=None, limit=top_k * 2)
+        except Exception as exc:
+            logger.debug("Keyword search failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Fusion: merge vector results + keyword results via RRF + keyword boost
+    # ------------------------------------------------------------------
+    # Build rank maps for RRF
+    vec_rank: dict[str, int] = {}
+    for i, r in enumerate(results):
+        if r["id"] not in vec_rank:
+            vec_rank[r["id"]] = i
+
+    kw_rank: dict[str, int] = {}
+    for i, r in enumerate(kw_results):
+        if r["id"] not in kw_rank:
+            kw_rank[r["id"]] = i
+
+    # Merge all results by id
+    by_id: dict[str, dict] = {}
     for r in results:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            unique.append(r)
+        by_id.setdefault(r["id"], r)
+    for r in kw_results:
+        by_id.setdefault(r["id"], r)
+
+    # Compute final score: vector_score * keyword_boost, with RRF bonus for keyword hits
+    for rid, r in by_id.items():
+        base_score = r.get("score", 0.0)
+
+        # Keyword boost: fraction of keywords found in content
+        kw_frac = _keyword_score(r.get("content", ""), keywords) if keywords else 0.0
+        kw_boost = min(_KW_BONUS_CAP, 1.0 + _KW_BONUS_WEIGHT * kw_frac)
+
+        # RRF bonus: reward items found by both strategies
+        rrf = 0.0
+        if rid in vec_rank:
+            rrf += 1.0 / (_RRF_K + vec_rank[rid])
+        if rid in kw_rank:
+            rrf += 1.0 / (_RRF_K + kw_rank[rid])
+
+        # Items only from keyword search (no vector score) get a base from RRF
+        if base_score == 0 and rrf > 0:
+            base_score = rrf * 50  # scale RRF to ~0.5-0.8 range
+
+        r["score"] = base_score * kw_boost + rrf * 0.1
+
+    unique = list(by_id.values())
 
     # Sort by score desc
     unique.sort(key=lambda x: x["score"], reverse=True)

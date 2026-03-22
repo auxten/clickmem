@@ -645,6 +645,105 @@ class CeoDB:
         )
 
     # ======================================================================
+    # Keyword search (cross-entity)
+    # ======================================================================
+
+    def _keyword_where(self, keywords: list[str], content_col: str = "content") -> str:
+        """Build WHERE clause matching keywords in content, tags, or entities."""
+        if not keywords:
+            return "0"
+        kw_array = self._array_literal(keywords)
+        return (
+            f"(multiSearchAnyCaseInsensitive({content_col}, {kw_array}) "
+            f"OR hasAny(tags, {kw_array}) "
+            f"OR hasAny(entities, {kw_array}))"
+        )
+
+    def search_by_keywords(
+        self,
+        keywords: list[str],
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search all CEO entity tables by keyword matching. Returns unified dicts."""
+        if not keywords:
+            return []
+        results: list[dict] = []
+
+        kw_where = self._keyword_where(keywords)
+
+        # Decisions (content = title || choice || reasoning)
+        conds = [kw_where.replace("content", "concat(title, ' ', choice, ' ', reasoning)")]
+        if project_id is not None:
+            conds.append(f"project_id = '{self._escape(project_id)}'")
+        where = " AND ".join(conds)
+        rows = self._query_json(
+            f"SELECT * FROM decisions FINAL WHERE {where} LIMIT {limit}"
+        )
+        for r in rows:
+            d = self._row_to_decision(r)
+            results.append({
+                "entity_type": "decision", "id": d.id,
+                "content": f"{d.title}: {d.choice}",
+                "metadata": {"reasoning": d.reasoning, "domain": d.domain,
+                              "outcome_status": d.outcome_status, "project_id": d.project_id},
+            })
+
+        # Principles
+        conds = [kw_where, "is_active = 1"]
+        if project_id is not None:
+            conds.append(f"project_id = '{self._escape(project_id)}'")
+        where = " AND ".join(conds)
+        rows = self._query_json(
+            f"SELECT * FROM principles FINAL WHERE {where} LIMIT {limit}"
+        )
+        for r in rows:
+            p = self._row_to_principle(r)
+            results.append({
+                "entity_type": "principle", "id": p.id,
+                "content": p.content,
+                "metadata": {"confidence": p.confidence, "domain": p.domain,
+                              "project_id": p.project_id},
+            })
+
+        # Episodes
+        conds = [kw_where]
+        if project_id is not None:
+            conds.append(f"project_id = '{self._escape(project_id)}'")
+        where = " AND ".join(conds)
+        rows = self._query_json(
+            f"SELECT * FROM episodes WHERE {where} "
+            f"ORDER BY created_at DESC LIMIT {limit}"
+        )
+        for r in rows:
+            e = self._row_to_episode(r)
+            results.append({
+                "entity_type": "episode", "id": e.id,
+                "content": e.content[:200],
+                "metadata": {"user_intent": e.user_intent, "domain": e.domain,
+                              "project_id": e.project_id},
+            })
+
+        # Facts
+        conds = [kw_where]
+        if project_id is not None:
+            conds.append(f"project_id = '{self._escape(project_id)}'")
+        where = " AND ".join(conds)
+        rows = self._query_json(
+            f"SELECT * FROM facts FINAL WHERE {where} LIMIT {limit}"
+        )
+        for r in rows:
+            ft = self._row_to_fact(r)
+            results.append({
+                "entity_type": "fact", "id": ft.id,
+                "content": ft.content,
+                "metadata": {"category": ft.category, "domain": ft.domain,
+                              "project_id": ft.project_id},
+            })
+
+        return results
+
+    # ======================================================================
     # Cross-entity search
     # ======================================================================
 

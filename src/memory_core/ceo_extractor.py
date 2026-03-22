@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
@@ -75,6 +76,10 @@ Rules:
 - Facts are standalone reference information that someone would look up later. \
 Good facts: server IPs, deployment hosts, API keys locations, service URLs, team contacts. \
 Do NOT extract common knowledge or information already encoded as decisions/principles.
+- When extracting facts about infrastructure, include ALL operational details in a SINGLE fact: \
+hostname, IP, port, username, login command, and path should all be in one fact entry. \
+Example: "OpenClaw deployed on mini server. Login: ssh tong@mini. Tailscale IP: 100.86.126.80." \
+NOT: separate facts for "server is mini", "username is tong", "IP is 100.86.126.80".
 - If the conversation contains role-based workflow outputs (JSON with APPROVE/REJECT/IMPROVE), \
 extract the underlying product or tech decision, not the approval action itself. \
 The real decision is what was approved and why — extract that substance.
@@ -322,6 +327,15 @@ class CEOExtractor:
 
         return self._db.insert_principle(p)
 
+    _FACT_ENTITY_PATTERNS = [
+        (re.compile(r'ssh\s+(\S+@\S+)'), "ssh_target"),
+        (re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b'), "ip"),
+        (re.compile(r'(?:port|端口)\s*:?\s*(\d{2,5})'), "port"),
+        (re.compile(r'(?:user(?:name)?|用户|账号)\s*:?\s*(\w+)'), "user"),
+        (re.compile(r'(~/[^\s,;]+|/(?:home|usr|var|etc|opt|Users)/[^\s,;]+)'), "path"),
+        (re.compile(r'(https?://\S+)'), "url"),
+    ]
+
     def _process_fact(self, item: dict, project_id: str) -> str | None:
         content = item.get("content", "")
         if not content:
@@ -329,13 +343,21 @@ class CEOExtractor:
 
         from memory_core.models import Fact
 
+        # Auto-extract entities from fact content for keyword searchability
+        entities = list(item.get("entities", []))
+        for pattern, _label in self._FACT_ENTITY_PATTERNS:
+            for m in pattern.finditer(content):
+                val = m.group(1) if m.lastindex else m.group(0)
+                if val and val not in entities:
+                    entities.append(val)
+
         f = Fact(
             project_id=project_id,
             content=content,
             category=item.get("category", "infrastructure"),
             domain=item.get("domain", "ops"),
             tags=item.get("tags", []),
-            entities=item.get("entities", []),
+            entities=entities,
         )
         if self._emb:
             f.embedding = self._emb.encode_document(content)
