@@ -38,6 +38,7 @@ class RecallRequest(BaseModel):
     category: Optional[str] = None
     since: Optional[str] = None
     until: Optional[str] = None
+    enhanced: bool = False
 
 
 class RememberRequest(BaseModel):
@@ -170,7 +171,10 @@ async def recall(req: RecallRequest):
         since=req.since,
         until=req.until,
     )
-    results = await asyncio.to_thread(t.recall, req.query, cfg=cfg, min_score=req.min_score)
+    results = await asyncio.to_thread(
+        t.recall, req.query, cfg=cfg, min_score=req.min_score,
+        enhanced=req.enhanced,
+    )
     return {"memories": results}
 
 
