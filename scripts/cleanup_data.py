@@ -11,18 +11,32 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+
+def _default_db_path() -> str:
+    """Resolve the chDB data path (same logic as MemoryDB)."""
+    env = os.environ.get("CLICKMEM_DB_PATH", "")
+    if env and env != ":memory:":
+        return env
+    return str(Path.home() / ".openclaw" / "memory" / "chdb-data")
 
 
 def main():
     parser = argparse.ArgumentParser(description="ClickMem CEO Brain data cleanup")
     parser.add_argument("--dry-run", action="store_true", help="Preview only")
+    parser.add_argument("--db-path", default=None, help="chDB data path (auto-detected if omitted)")
     args = parser.parse_args()
+
+    db_path = args.db_path or _default_db_path()
+    print(f"Using DB path: {db_path}")
 
     from memory_core.ceo_db import CeoDB
 
-    db = CeoDB()
+    db = CeoDB(db_path)
     counts = db.count_all()
     print(f"=== Current State ===")
     for k, v in counts.items():
