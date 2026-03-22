@@ -261,12 +261,14 @@ def recall(
     category: Optional[str] = typer.Option(None, help="Filter by category"),
     top_k: int = typer.Option(10, "--top-k", "-k", help="Max number of results"),
     min_score: float = typer.Option(0.0, "--min-score", help="Minimum relevance score threshold"),
+    enhanced: bool = typer.Option(False, "--enhanced", "-e",
+                                  help="Use LLM for query expansion and result reranking (slower)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Semantic search for memories."""
     t = _get_transport()
     cfg = RetrievalConfig(layer=layer, category=category, top_k=top_k)
-    results = t.recall(query, cfg=cfg, min_score=min_score)
+    results = t.recall(query, cfg=cfg, min_score=min_score, enhanced=enhanced)
 
     if json_output:
         typer.echo(json.dumps(results, default=str))

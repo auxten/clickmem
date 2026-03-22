@@ -35,31 +35,21 @@ _RRF_K = 60  # reciprocal rank fusion constant
 _CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]+')
 _WORD_RE = re.compile(r'[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]')
 
-# Common stopwords (bilingual, small set)
-_STOPWORDS = frozenset({
-    "的", "是", "在", "了", "我", "我的", "你", "他", "她", "它", "们",
-    "这", "那", "什么", "怎么", "哪里", "哪个", "用", "和", "与",
-    "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
-    "to", "for", "of", "and", "or", "my", "your", "his", "her", "its",
-    "what", "which", "where", "how", "who", "do", "does", "did",
-})
-
 
 def _tokenize_query(query: str) -> list[str]:
-    """Extract searchable keywords from a query string.
+    """Extract tokens from a query string.
 
-    Handles CJK characters (split into individual chars) and
-    Latin words. Filters stopwords and short tokens.
+    Handles CJK characters (split into individual chars) and Latin words.
+    No stopword filtering — keyword discriminativeness is handled by
+    the scoring layer (IDF-like weighting via match frequency).
     """
     tokens = _WORD_RE.findall(query)
+    seen: set[str] = set()
     keywords = []
     for t in tokens:
-        t_lower = t.lower()
-        if t_lower in _STOPWORDS:
-            continue
-        if len(t) == 1 and not _CJK_RE.match(t):
-            continue  # skip single ASCII chars
-        keywords.append(t)
+        if t not in seen:
+            seen.add(t)
+            keywords.append(t)
     return keywords
 
 
@@ -124,6 +114,9 @@ def ceo_search(
     include_global: bool = True,
     session_id: str | None = None,
     task_context: str | None = None,
+    llm_complete: Callable[[str], str] | None = None,
+    use_query_expansion: bool = False,
+    use_llm_rerank: bool = False,
 ) -> list[dict]:
     """Unified search across CEO entities with project-aware scoring.
 
@@ -135,6 +128,10 @@ def ceo_search(
     When session_id is set, session topic tracking is used for scope matching.
     When task_context is set, it provides explicit task context for scope matching.
 
+    LLM-enhanced modes (require llm_complete):
+    - use_query_expansion: LLM generates keyword expansions and sub-queries
+    - use_llm_rerank: LLM reranks top candidates after retrieval
+
     Returns list of dicts with keys:
     entity_type, id, content, score, metadata
     """
@@ -142,6 +139,14 @@ def ceo_search(
         return []
 
     t0 = time.monotonic()
+
+    # Stage 1: Query analysis
+    from memory_core.ceo_query_analyzer import analyze_query_fast, analyze_query_llm
+    if use_query_expansion and llm_complete:
+        qa = analyze_query_llm(query, llm_complete)
+    else:
+        qa = analyze_query_fast(query)
+
     query_vec = emb.encode_query(query[:500])
     types = entity_types or ["decisions", "principles", "episodes", "facts"]
     results: list[dict] = []
@@ -276,13 +281,46 @@ def ceo_search(
     # ------------------------------------------------------------------
     # Keyword search: find records matching query keywords
     # ------------------------------------------------------------------
-    keywords = _tokenize_query(query)
+    keywords = qa.keywords + qa.expanded_terms  # include LLM expansions if available
     kw_results: list[dict] = []
     if keywords:
         try:
             kw_results = ceo_db.search_by_keywords(keywords, project_id=None, limit=top_k * 2)
         except Exception as exc:
             logger.debug("Keyword search failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Sub-query multi-vector search (when query has multiple intents)
+    # ------------------------------------------------------------------
+    if len(qa.sub_queries) > 1:
+        for sq in qa.sub_queries:
+            sq_vec = emb.encode_query(sq[:500])
+            for tbl_type in types:
+                try:
+                    if tbl_type == "decisions":
+                        items = ceo_db.search_decisions_by_vector(sq_vec, project_id=None, limit=5)
+                        for d in items:
+                            dist = ceo_db._cosine_dist(sq_vec, d.embedding) if d.embedding else 1.0
+                            results.append({
+                                "entity_type": "decision", "id": d.id,
+                                "content": f"{d.title}: {d.choice}",
+                                "score": (1.0 - dist) * _project_boost(d.project_id),
+                                "metadata": {"domain": d.domain, "project_id": d.project_id,
+                                              "outcome_status": d.outcome_status},
+                            })
+                    elif tbl_type == "facts":
+                        items = ceo_db.search_facts_by_vector(sq_vec, project_id=None, limit=5)
+                        for ft in items:
+                            dist = ceo_db._cosine_dist(sq_vec, ft.embedding) if ft.embedding else 1.0
+                            results.append({
+                                "entity_type": "fact", "id": ft.id,
+                                "content": ft.content,
+                                "score": (1.0 - dist) * _project_boost(ft.project_id),
+                                "metadata": {"category": ft.category, "domain": ft.domain,
+                                              "project_id": ft.project_id},
+                            })
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Fusion: merge vector results + keyword results via RRF + keyword boost
@@ -338,9 +376,14 @@ def ceo_search(
         unique[0]["score"] if unique else 0.0, elapsed_ms,
     )
 
+    # Optional LLM reranking
+    candidates = unique[:top_k * 2]  # feed more candidates to LLM
+    if use_llm_rerank and llm_complete and len(candidates) > 1:
+        candidates = _llm_rerank(query, candidates, llm_complete, top_k)
+
     # Optional JSONL recall logging
     from memory_core.recall_logger import log_recall
-    final = _mmr_diverse(unique, top_k)
+    final = _mmr_diverse(candidates, top_k)
     log_recall(
         query=query, project_id=project_id or "",
         session_id=session_id or "", results=final,
@@ -367,3 +410,75 @@ def _mmr_diverse(results: list[dict], top_k: int, type_limit: int = 0) -> list[d
         if len(selected) >= top_k:
             break
     return selected
+
+
+_LLM_RERANK_PROMPT = """\
+Given the user's query, rank these memory results by relevance.
+Return ONLY a JSON array of result numbers in order of relevance (most relevant first).
+
+Query: {query}
+
+Results:
+{results_text}
+
+Return ONLY a JSON array like [3, 1, 5, 2, 4] — no other text.
+"""
+
+
+def _llm_rerank(
+    query: str,
+    candidates: list[dict],
+    llm_complete: Callable[[str], str],
+    top_k: int = 10,
+) -> list[dict]:
+    """Ask LLM to rerank candidates by relevance to query.
+
+    Falls back to original ordering on any failure.
+    """
+    if len(candidates) <= 1:
+        return candidates
+
+    # Build numbered list for LLM
+    lines = []
+    for i, r in enumerate(candidates[:15], 1):  # cap at 15 to fit context
+        etype = r.get("entity_type", "")
+        content = r.get("content", "").replace("\n", " ")[:150]
+        lines.append(f"{i}. [{etype}] {content}")
+
+    prompt = _LLM_RERANK_PROMPT.format(
+        query=query,
+        results_text="\n".join(lines),
+    )
+
+    try:
+        import json
+        raw = llm_complete(prompt)
+        text = raw.strip()
+        # Strip markdown fences
+        if text.startswith("```"):
+            text_lines = text.split("\n")
+            text_lines = [ln for ln in text_lines if not ln.strip().startswith("```")]
+            text = "\n".join(text_lines).strip()
+
+        rankings = json.loads(text)
+        if not isinstance(rankings, list):
+            return candidates[:top_k]
+
+        # Reorder candidates by LLM ranking
+        reranked: list[dict] = []
+        seen: set[int] = set()
+        for idx in rankings:
+            if isinstance(idx, int) and 1 <= idx <= len(candidates) and idx not in seen:
+                reranked.append(candidates[idx - 1])
+                seen.add(idx)
+
+        # Append any candidates the LLM missed
+        for i, r in enumerate(candidates):
+            if (i + 1) not in seen:
+                reranked.append(r)
+
+        return reranked[:top_k]
+
+    except Exception as exc:
+        logger.debug("LLM rerank failed: %s", exc)
+        return candidates[:top_k]

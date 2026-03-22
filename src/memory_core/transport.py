@@ -20,7 +20,7 @@ class Transport(Protocol):
     """Protocol defining the memory operation interface."""
 
     def recall(self, query: str, cfg: RetrievalConfig | None = None,
-               min_score: float = 0.0) -> list[dict]: ...
+               min_score: float = 0.0, enhanced: bool = False) -> list[dict]: ...
 
     def remember(self, content: str, layer: str = "semantic",
                  category: str = "knowledge", tags: list[str] | None = None,
@@ -83,7 +83,8 @@ class LocalTransport:
         return self._emb
 
     def recall(self, query: str, cfg: RetrievalConfig | None = None,
-               min_score: float = 0.0, cwd: str = "") -> list[dict]:
+               min_score: float = 0.0, cwd: str = "",
+               enhanced: bool = False) -> list[dict]:
         from memory_core.retrieval import hybrid_search
         from memory_core.ceo_retrieval import ceo_search
 
@@ -98,6 +99,12 @@ class LocalTransport:
             except Exception:
                 pass
 
+        # Get LLM for enhanced mode
+        llm_complete = None
+        if enhanced:
+            from memory_core.llm import get_llm_complete
+            llm_complete = get_llm_complete()
+
         try:
             ceo_db = self._get_ceo_db()
             # Detect current project for scope-aware scoring
@@ -107,6 +114,9 @@ class LocalTransport:
                 current_project_id = detect_project(ceo_db, cwd=cwd, emb=emb) or None
             ceo_results = ceo_search(
                 ceo_db, emb, query, project_id=current_project_id, top_k=top_k,
+                llm_complete=llm_complete,
+                use_query_expansion=enhanced,
+                use_llm_rerank=enhanced,
             )
             _CEO_LAYER_MAP = {"decision": "semantic", "principle": "semantic", "episode": "episodic", "fact": "semantic"}
             for r in ceo_results:
@@ -445,8 +455,8 @@ class RemoteTransport:
         return resp.json()
 
     def recall(self, query: str, cfg: RetrievalConfig | None = None,
-               min_score: float = 0.0) -> list[dict]:
-        body: dict = {"query": query, "min_score": min_score}
+               min_score: float = 0.0, enhanced: bool = False) -> list[dict]:
+        body: dict = {"query": query, "min_score": min_score, "enhanced": enhanced}
         if cfg:
             body["top_k"] = cfg.top_k
             body["layer"] = cfg.layer
