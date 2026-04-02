@@ -19,6 +19,28 @@ _AUTO_CREATE_BLACKLIST = frozenset({
 })
 
 
+def _is_valid_project_name(name: str) -> bool:
+    """Reject directory names that are clearly not project names."""
+    if not name or len(name) <= 1 or name in (".", "/"):
+        return False
+    if name in _AUTO_CREATE_BLACKLIST:
+        return False
+    # Hidden directories (e.g., .openclaw, .claude)
+    if name.startswith("."):
+        return False
+    # User home directory basename (e.g., "tong", "auxten") — too generic
+    home_basename = os.path.basename(os.path.expanduser("~"))
+    if name == home_basename:
+        return False
+    return True
+
+
+def _is_under_home_root(cwd: str) -> bool:
+    """Check if cwd IS the home directory itself (not a subdir)."""
+    home = os.path.expanduser("~")
+    return os.path.normpath(cwd) == os.path.normpath(home)
+
+
 def detect_project(
     ceo_db: CeoDB,
     cwd: str = "",
@@ -84,22 +106,32 @@ def detect_project(
         except Exception:
             pass
 
-    # 6. Auto-create from cwd (guarded)
-    if allow_auto_create and cwd:
+    # 6. Auto-create from cwd (guarded) or adopt existing same-name project
+    if allow_auto_create and cwd and not _is_under_home_root(cwd):
         project_name = os.path.basename(cwd)
-        if (
-            project_name
-            and len(project_name) > 1
-            and project_name not in (".", "/")
-            and project_name not in _AUTO_CREATE_BLACKLIST
-        ):
-            from memory_core.models import Project
-            p = Project(name=project_name, repo_url=cwd, status="building")
-            if emb:
-                p.embedding = emb.encode_document(project_name)
-            pid = ceo_db.insert_project(p)
-            logger.info("Auto-created project '%s' from cwd %s", project_name, cwd)
-            return pid
+        if not _is_valid_project_name(project_name):
+            return ""
+
+        # Check if a project with the same name already exists (different machine path)
+        projects = ceo_db.list_projects()
+        for p in projects:
+            if p.name and p.name.lower() == project_name.lower():
+                # Adopt: update repo_url to current CWD so future path-match works
+                if p.repo_url != cwd:
+                    ceo_db.update_project(p.id, repo_url=cwd)
+                    logger.info(
+                        "Adopted existing project '%s': updated repo_url %s → %s",
+                        p.name, p.repo_url, cwd,
+                    )
+                return p.id
+
+        from memory_core.models import Project
+        p = Project(name=project_name, repo_url=cwd, status="building")
+        if emb:
+            p.embedding = emb.encode_document(project_name)
+        pid = ceo_db.insert_project(p)
+        logger.info("Auto-created project '%s' from cwd %s", project_name, cwd)
+        return pid
 
     # 7. Unassigned
     return ""

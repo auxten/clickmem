@@ -108,7 +108,8 @@ class TestRawIdOnMemories:
 class TestIngestFlow:
     """Test the raw-first ingestion via LocalTransport."""
 
-    def test_ingest_stores_raw_and_extracts(self, db, mock_emb, mock_llm):
+    def test_ingest_stores_raw_without_episode_when_no_llm(self, db, mock_emb, mock_llm):
+        """When LLM is unavailable, raw is stored but no episode is created."""
         from memory_core.transport import LocalTransport
         import memory_core.llm as llm_mod
 
@@ -121,14 +122,17 @@ class TestIngestFlow:
         result = t.ingest("user: Hello\nassistant: Hi there", session_id="s1", source="cursor")
 
         assert "raw_id" in result
-        assert "episodes" in result
-        assert len(result["episodes"]) >= 1
+        assert result["episodes"] == []  # No raw text stored as episode
+        assert result.get("skipped") == "no_llm"
 
         raw = db.get_raw(result["raw_id"])
         assert raw is not None
         assert raw["source"] == "cursor"
+        # Raw transcript stays unprocessed for later extraction
+        assert int(raw["is_processed"]) == 0
 
-    def test_ingest_marks_raw_processed(self, db, mock_emb, mock_llm):
+    def test_ingest_marks_raw_processed_after_extraction(self, db, mock_emb, mock_llm):
+        """When LLM is unavailable, raw stays unprocessed (not marked processed)."""
         from memory_core.transport import LocalTransport
         import memory_core.llm as llm_mod
 
@@ -142,4 +146,5 @@ class TestIngestFlow:
 
         db.optimize()
         raw = db.get_raw(result["raw_id"])
-        assert int(raw["is_processed"]) == 1
+        # Should NOT be marked processed when LLM was unavailable
+        assert int(raw["is_processed"]) == 0

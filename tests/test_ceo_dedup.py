@@ -59,6 +59,21 @@ class TestDedupDecision:
         result = dedup_decision(ceo_db, mock_emb, d)
         assert result.action == "ADD"
 
+    def test_same_title_different_choice_updates(self, ceo_db, mock_emb):
+        """Decisions with identical titles but different choice wording should UPDATE, not ADD."""
+        d1 = DecisionFactory.build(title="X Bot Tool Selection", choice="Use browser-use CLI")
+        d1.embedding = mock_emb.encode_document(f"{d1.title} {d1.choice}")
+        ceo_db.insert_decision(d1)
+
+        d2 = DecisionFactory.build(
+            title="X Bot Tool Selection",
+            choice="Use the browser-use CLI to control Chrome via CDP protocol for posting.",
+        )
+        d2.embedding = mock_emb.encode_document(f"{d2.title} {d2.choice}")
+        result = dedup_decision(ceo_db, mock_emb, d2)
+        assert result.action == "UPDATE"
+        assert result.existing_id == d1.id
+
 
 class TestDedupPrinciple:
 

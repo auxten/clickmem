@@ -1,6 +1,6 @@
 """Tests for project detection module."""
 
-from memory_core.project_detect import detect_project, _AUTO_CREATE_BLACKLIST
+from memory_core.project_detect import detect_project, _AUTO_CREATE_BLACKLIST, _is_valid_project_name
 from tests.helpers.factories import ProjectFactory
 
 
@@ -100,18 +100,64 @@ class TestDetectProject:
 
     def test_semantic_threshold_tightened(self, ceo_db, mock_emb):
         """Semantic search requires dist < 0.3 (similarity > 0.7)."""
-        # With mock embeddings, all vectors are similar enough,
-        # but we verify the function doesn't crash and returns expected behavior.
         p = ProjectFactory.build(name="TestProject")
         if mock_emb:
             p.embedding = mock_emb.encode_document("TestProject")
         ceo_db.insert_project(p)
 
-        # Content that doesn't name the project but might semantically match
         result = detect_project(
             ceo_db,
             content="totally unrelated content about cooking recipes",
             emb=mock_emb,
         )
-        # The result depends on mock embedding behavior; main thing is no crash.
         assert isinstance(result, str)
+
+    def test_same_name_different_path_adopts_existing(self, ceo_db, mock_emb):
+        """When CWD has a different path but same project name, adopt the existing project."""
+        existing = ProjectFactory.build(name="clickmem", repo_url="/Users/auxten/Codes/clickmem")
+        ceo_db.insert_project(existing)
+
+        # Different machine, same project name
+        result = detect_project(
+            ceo_db,
+            cwd="/Users/tong/clickmem",
+            emb=mock_emb,
+            allow_auto_create=True,
+        )
+        assert result == existing.id  # Should adopt, not create new
+
+        # Verify repo_url was updated
+        updated = ceo_db.get_project(existing.id)
+        assert updated.repo_url == "/Users/tong/clickmem"
+
+    def test_hidden_dir_not_auto_created(self, ceo_db, mock_emb):
+        """Hidden directories (starting with .) should not become projects."""
+        result = detect_project(
+            ceo_db,
+            cwd="/Users/tong/.openclaw",
+            emb=mock_emb,
+            allow_auto_create=True,
+        )
+        assert result == ""
+
+    def test_home_dir_not_auto_created(self, ceo_db, mock_emb):
+        """User home directory itself should not become a project."""
+        import os
+        home = os.path.expanduser("~")
+        result = detect_project(
+            ceo_db,
+            cwd=home,
+            emb=mock_emb,
+            allow_auto_create=True,
+        )
+        assert result == ""
+
+    def test_is_valid_project_name(self):
+        """Validate project name heuristics."""
+        assert _is_valid_project_name("clickmem") is True
+        assert _is_valid_project_name("my-project") is True
+        assert _is_valid_project_name(".openclaw") is False
+        assert _is_valid_project_name(".claude") is False
+        assert _is_valid_project_name("Downloads") is False
+        assert _is_valid_project_name("") is False
+        assert _is_valid_project_name("x") is False  # too short

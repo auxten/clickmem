@@ -241,17 +241,10 @@ class LocalTransport:
         llm_complete = get_llm_complete()
 
         if llm_complete is None:
-            # Fallback: store as raw episode
-            from memory_core.models import Episode
-            ep = Episode(
-                content=filtered, project_id=project_id,
-                session_id=session_id, agent_source=source,
-                raw_id=raw_id,
-                embedding=emb.encode_document(filtered),
-            )
-            ceo_db.insert_episode(ep)
-            db.mark_raw_processed(raw_id)
-            return {"raw_id": raw_id, "episodes": [ep.id]}
+            # No LLM available: keep raw transcript unprocessed for later extraction.
+            # Do NOT store raw conversation text as an episode — it pollutes recall.
+            _log.info("No LLM available; raw transcript %s kept unprocessed for later extraction", raw_id[:8])
+            return {"raw_id": raw_id, "episodes": [], "skipped": "no_llm"}
 
         from memory_core.ceo_extractor import CEOExtractor
         extractor = CEOExtractor(ceo_db, emb)
@@ -260,21 +253,15 @@ class LocalTransport:
             session_id=session_id, agent_source=source, raw_id=raw_id,
         )
 
-        # Fallback: if extraction produced nothing, store as raw episode
-        # so the content is still searchable via recall
+        # If extraction produced nothing, keep raw transcript unprocessed
+        # for later re-extraction. Do NOT store raw text as an episode.
         has_entities = (result.episode_ids or result.decision_ids
                         or result.principle_ids or result.fact_ids)
-        if not has_entities and len(filtered) >= 40:
-            _log.info("CEO extraction returned empty; storing fallback episode (%d chars)", len(filtered))
-            from memory_core.models import Episode
-            ep = Episode(
-                content=filtered, project_id=project_id,
-                session_id=session_id, agent_source=source,
-                raw_id=raw_id,
-                embedding=emb.encode_document(filtered),
-            )
-            ceo_db.insert_episode(ep)
-            result.episode_ids.append(ep.id)
+        if not has_entities:
+            _log.info("CEO extraction returned empty for %d chars; raw transcript %s kept for re-extraction",
+                       len(filtered), raw_id[:8])
+            db.mark_raw_processed(raw_id)  # still mark processed to avoid infinite retry
+            # but do not insert a raw-text episode
 
         db.mark_raw_processed(raw_id)
 

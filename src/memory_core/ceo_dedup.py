@@ -78,6 +78,14 @@ def dedup_decision(
     dist = ceo_db._cosine_dist(decision.embedding, best.embedding)
     similarity = 1.0 - dist
 
+    # Title-exact-match shortcut: same title → always UPDATE regardless of embedding score
+    if decision.title.strip().lower() == best.title.strip().lower():
+        return DedupResult(
+            action="UPDATE",
+            existing_id=best.id,
+            note=f"Same title match (sim={similarity:.2f})",
+        )
+
     if similarity < 0.7:
         return DedupResult(action="ADD")
 
