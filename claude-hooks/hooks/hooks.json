@@ -46,6 +46,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST -H 'Content-Type: application/json' -d @- http://100.86.126.80:9527/hooks/claude-code",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

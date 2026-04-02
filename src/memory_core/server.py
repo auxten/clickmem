@@ -338,6 +338,8 @@ async def claude_code_hook(request: Request):
             return JSONResponse(await _cc_stop(payload))
         elif event == "SessionEnd":
             return JSONResponse(await _cc_session_end(payload))
+        elif event == "PostToolUse":
+            return JSONResponse(await _cc_post_tool_use(payload))
         else:
             return JSONResponse({})
     except Exception as exc:
@@ -450,6 +452,23 @@ async def _cc_stop(payload: dict) -> dict:
     except Exception as exc:
         _log.debug("claude-code Stop ingest failed: %s", exc)
 
+    # Sync auto-memory files (direct parse, no LLM)
+    if cwd:
+        try:
+            from memory_core.import_agent import sync_project_memories
+            ceo_db = t._get_ceo_db()
+            emb = t._get_emb()
+            sync_result = await asyncio.to_thread(
+                sync_project_memories, ceo_db, emb, cwd,
+            )
+            if sync_result.get("synced", 0) > 0:
+                _log.info(
+                    "claude-code Stop: synced %d auto-memory files",
+                    sync_result["synced"],
+                )
+        except Exception as exc:
+            _log.debug("claude-code Stop auto-memory sync failed: %s", exc)
+
     return {}
 
 
@@ -488,6 +507,49 @@ async def _cc_session_end(payload: dict) -> dict:
                 _log.info("claude-code SessionEnd maintenance: %s", ", ".join(parts))
     except Exception as exc:
         _log.debug("claude-code SessionEnd maintenance failed: %s", exc)
+
+    return {}
+
+
+async def _cc_post_tool_use(payload: dict) -> dict:
+    """Sync a single auto-memory file after a Write/Edit tool use.
+
+    Fast-path filter: only processes files in ~/.claude/projects/*/memory/*.md.
+    """
+    tool_input = payload.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return {}
+
+    file_path = tool_input.get("file_path", "") or tool_input.get("path", "")
+    if not file_path:
+        return {}
+
+    # Fast filter — only Claude auto-memory files
+    claude_projects = os.path.expanduser("~/.claude/projects")
+    if not file_path.startswith(claude_projects) or "/memory/" not in file_path:
+        return {}
+    if not file_path.endswith(".md") or file_path.endswith("MEMORY.md"):
+        return {}
+
+    cwd = payload.get("cwd", "")
+    if not cwd:
+        return {}
+
+    t = _get_transport()
+    try:
+        from memory_core.import_agent import sync_single_memory_file
+        ceo_db = t._get_ceo_db()
+        emb = t._get_emb()
+        result = await asyncio.to_thread(
+            sync_single_memory_file, ceo_db, emb, file_path, cwd,
+        )
+        if result.get("synced", 0) > 0:
+            _log.info(
+                "claude-code PostToolUse: synced %s",
+                os.path.basename(file_path),
+            )
+    except Exception as exc:
+        _log.debug("claude-code PostToolUse auto-memory sync failed: %s", exc)
 
     return {}
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
-from memory_core.models import Decision, Episode, Principle
+from memory_core.models import Decision, Episode, Fact, Principle
 
 if TYPE_CHECKING:
     from memory_core.ceo_db import CeoDB
@@ -176,5 +176,41 @@ def dedup_principle(
                 return DedupResult(action="CONFLICT", existing_id=best.id, note=parsed.get("reason", ""))
         except Exception:
             pass
+
+    return DedupResult(action="ADD")
+
+
+def dedup_fact(
+    ceo_db: CeoDB,
+    emb,
+    fact: Fact,
+    threshold: float = 0.9,
+) -> DedupResult:
+    """Check for near-duplicate facts. Returns NOOP if duplicate, ADD if new."""
+    if not fact.embedding:
+        return DedupResult(action="ADD")
+
+    results = ceo_db.search_facts_by_vector(
+        fact.embedding,
+        project_id=fact.project_id or None,
+        limit=3,
+    )
+
+    if not results:
+        return DedupResult(action="ADD")
+
+    best = results[0]
+    if not best.embedding:
+        return DedupResult(action="ADD")
+
+    dist = ceo_db._cosine_dist(fact.embedding, best.embedding)
+    similarity = 1.0 - dist
+
+    if similarity >= threshold:
+        return DedupResult(
+            action="NOOP",
+            existing_id=best.id,
+            note=f"Duplicate fact (sim={similarity:.2f})",
+        )
 
     return DedupResult(action="ADD")

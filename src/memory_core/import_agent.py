@@ -511,8 +511,10 @@ def discover_knowledge_docs(cwd_set: set[str]) -> list[DocInfo]:
                         git_remote=git_remote, github_url=github_url,
                     ))
 
-        # Cursor rules inside project
-        for rule_path in glob.glob(os.path.join(cwd, ".cursor", "rules", "*.md")):
+        # Cursor rules inside project (.md and .mdc)
+        cursor_rules_dir = os.path.join(cwd, ".cursor", "rules")
+        for rule_path in (glob.glob(os.path.join(cursor_rules_dir, "*.md"))
+                          + glob.glob(os.path.join(cursor_rules_dir, "*.mdc"))):
             if rule_path in seen_paths:
                 continue
             seen_paths.add(rule_path)
@@ -522,6 +524,21 @@ def discover_knowledge_docs(cwd_set: set[str]) -> list[DocInfo]:
                     path=rule_path, content=content, doc_type="cursor_rule",
                     project_name=project_name, cwd=cwd,
                     git_remote=git_remote, github_url=github_url,
+                ))
+
+    # 3. Global Cursor rules (~/.cursor/rules/)
+    _global_cursor_rules = os.path.expanduser("~/.cursor/rules")
+    if os.path.isdir(_global_cursor_rules):
+        for rule_path in (glob.glob(os.path.join(_global_cursor_rules, "*.md"))
+                          + glob.glob(os.path.join(_global_cursor_rules, "*.mdc"))):
+            if rule_path in seen_paths:
+                continue
+            seen_paths.add(rule_path)
+            content = _read_file(rule_path)
+            if content:
+                docs.append(DocInfo(
+                    path=rule_path, content=content, doc_type="cursor_rule",
+                    project_name="global", cwd="",
                 ))
 
     return docs
@@ -551,7 +568,8 @@ def scan_path(path: str) -> list[DocInfo]:
 
     cursor_rules = os.path.join(path, ".cursor", "rules")
     if os.path.isdir(cursor_rules):
-        for rule_path in glob.glob(os.path.join(cursor_rules, "*.md")):
+        for rule_path in (glob.glob(os.path.join(cursor_rules, "*.md"))
+                          + glob.glob(os.path.join(cursor_rules, "*.mdc"))):
             content = _read_file(rule_path)
             if content:
                 docs.append(DocInfo(
@@ -561,6 +579,20 @@ def scan_path(path: str) -> list[DocInfo]:
                 ))
 
     return docs
+
+
+def _infer_domain(text: str) -> str:
+    """Infer a CEO-brain domain from free-text content."""
+    lower = text.lower()
+    if any(w in lower for w in ("deploy", "ci", "release", "pip", "git tag", "service", "launchd")):
+        return "ops"
+    if any(w in lower for w in ("architect", "interface", "api", "asyncio", "chdb", "hook", "schema", "engine")):
+        return "tech"
+    if any(w in lower for w in ("product", "user-focused", "doc")):
+        return "product"
+    if any(w in lower for w in ("test", "mock", "pytest", "fixture")):
+        return "ops"
+    return "management"
 
 
 def parse_agents_md(content: str) -> list[dict]:
@@ -593,22 +625,57 @@ def parse_agents_md(content: str) -> list[dict]:
             else:
                 scope = "global"
 
-            # Infer domain from content keywords
-            lower = bullet.lower()
-            if any(w in lower for w in ("deploy", "ci", "release", "pip", "git tag", "service", "launchd")):
-                domain = "ops"
-            elif any(w in lower for w in ("architect", "interface", "api", "asyncio", "chdb", "hook", "schema", "engine")):
-                domain = "tech"
-            elif any(w in lower for w in ("product", "user-focused", "doc")):
-                domain = "product"
-            elif any(w in lower for w in ("test", "mock", "pytest", "fixture")):
-                domain = "ops"
-            else:
-                domain = "management"
-
-            results.append({"content": bullet, "domain": domain, "scope": scope})
+            results.append({"content": bullet, "domain": _infer_domain(bullet), "scope": scope})
 
     return results
+
+
+def parse_claude_memory_file(content: str) -> dict | None:
+    """Parse a Claude Code auto-memory file with YAML frontmatter.
+
+    Expected format::
+
+        ---
+        name: ...
+        description: ...
+        type: feedback | user | project | reference
+        ---
+        Body text ...
+
+    Returns dict with keys ``name``, ``description``, ``type``, ``body``,
+    or *None* if the file lacks a ``type`` field.
+    """
+    content = content.strip()
+    if not content.startswith("---"):
+        return None
+
+    # Split on second '---'
+    rest = content[3:]
+    idx = rest.find("\n---")
+    if idx < 0:
+        return None
+
+    frontmatter_text = rest[:idx]
+    body = rest[idx + 4:].strip()  # skip "\n---"
+
+    # Parse simple key: value lines from frontmatter
+    meta: dict[str, str] = {}
+    for line in frontmatter_text.split("\n"):
+        line = line.strip()
+        if ":" in line:
+            key, _, value = line.partition(":")
+            meta[key.strip()] = value.strip()
+
+    mem_type = meta.get("type", "")
+    if not mem_type:
+        return None
+
+    return {
+        "name": meta.get("name", ""),
+        "description": meta.get("description", ""),
+        "type": mem_type,
+        "body": body,
+    }
 
 
 def ingest_agents_md(
@@ -652,6 +719,199 @@ def ingest_agents_md(
         imported += 1
 
     return {"imported": imported, "skipped": skipped}
+
+
+def ingest_claude_memory(
+    ceo_db,
+    emb,
+    doc: DocInfo,
+    project_id: str = "",
+) -> dict:
+    """Directly parse a Claude Code auto-memory file into CEO entities.
+
+    Type mapping:
+      feedback, user → Principle  (user is global, feedback is project-scoped)
+      project, reference → Fact   (category=reference)
+
+    Returns {"imported": N, "skipped": N, "entity_type": str}.
+    """
+    from memory_core.ceo_dedup import dedup_fact, dedup_principle
+    from memory_core.models import Fact, Principle
+
+    # Skip MEMORY.md index file
+    if os.path.basename(doc.path) == "MEMORY.md":
+        return {"imported": 0, "skipped": 1, "entity_type": "index"}
+
+    parsed = parse_claude_memory_file(doc.content)
+    if parsed is None:
+        return {"imported": 0, "skipped": 1, "entity_type": "unknown"}
+
+    mem_type = parsed["type"]
+    # Use body as content; fall back to description if body is empty
+    content = parsed["body"] or parsed.get("description", "")
+    if not content or len(content) < 10:
+        return {"imported": 0, "skipped": 1, "entity_type": mem_type}
+
+    # Prepend name for richer context
+    name = parsed.get("name", "")
+    if name:
+        content = f"{name}: {content}"
+
+    domain = _infer_domain(content)
+    embedding = emb.encode_document(content) if emb else None
+
+    if mem_type in ("feedback", "user"):
+        # user → global principle; feedback → project-scoped
+        pid = "" if mem_type == "user" else project_id
+        p = Principle(
+            project_id=pid,
+            content=content,
+            domain=domain,
+            confidence=1.0,
+            evidence_count=1,
+            embedding=embedding,
+        )
+        result = dedup_principle(ceo_db, emb, p)
+        if result.action in ("NOOP", "CONFLICT"):
+            return {"imported": 0, "skipped": 1, "entity_type": "principle"}
+        ceo_db.insert_principle(p)
+        return {"imported": 1, "skipped": 0, "entity_type": "principle"}
+
+    elif mem_type in ("project", "reference"):
+        f = Fact(
+            project_id=project_id,
+            content=content,
+            category="reference",
+            domain=domain,
+            embedding=embedding,
+        )
+        result = dedup_fact(ceo_db, emb, f)
+        if result.action == "NOOP":
+            return {"imported": 0, "skipped": 1, "entity_type": "fact"}
+        ceo_db.insert_fact(f)
+        return {"imported": 1, "skipped": 0, "entity_type": "fact"}
+
+    # Unknown type — skip
+    return {"imported": 0, "skipped": 1, "entity_type": mem_type}
+
+
+# ---------------------------------------------------------------------------
+# Real-time sync — called from hooks
+# ---------------------------------------------------------------------------
+
+def _cwd_to_claude_memory_dir(cwd: str) -> str | None:
+    """Derive the Claude Code auto-memory directory for a given cwd.
+
+    Returns the path if it exists, or None.
+    """
+    if not cwd:
+        return None
+    # Claude Code encodes cwd as: replace "/" with "-", keep leading dash
+    encoded = cwd.replace("/", "-")
+    candidates = [
+        os.path.join(_CLAUDE_PROJECTS_DIR, encoded, "memory"),
+        os.path.join(_CLAUDE_PROJECTS_DIR, encoded.lstrip("-"), "memory"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def sync_project_memories(
+    ceo_db,
+    emb,
+    cwd: str,
+    state: "ImportState | None" = None,
+) -> dict:
+    """Scan the Claude auto-memory directory for a project and sync changed files.
+
+    Called from the Stop hook to capture auto-memory updates written during the
+    session.  Uses mtime-based incremental to skip unchanged files.
+
+    Returns {"synced": N, "skipped": N}.
+    """
+    from memory_core.project_detect import detect_project
+
+    memory_dir = _cwd_to_claude_memory_dir(cwd)
+    if not memory_dir:
+        return {"synced": 0, "skipped": 0}
+
+    if state is None:
+        state = ImportState()
+
+    project_id = detect_project(ceo_db, cwd=cwd, emb=emb) or ""
+    git_remote, github_url = _extract_git_info(cwd)
+
+    synced = 0
+    skipped = 0
+
+    for md_path in glob.glob(os.path.join(memory_dir, "*.md")):
+        if os.path.basename(md_path) == "MEMORY.md":
+            continue
+        if state.is_doc_current(md_path):
+            skipped += 1
+            continue
+
+        content = _read_file(md_path)
+        if not content:
+            continue
+
+        doc = DocInfo(
+            path=md_path, content=content, doc_type="claude_memory",
+            project_name=os.path.basename(cwd) if cwd else "",
+            cwd=cwd, git_remote=git_remote, github_url=github_url,
+        )
+        result = ingest_claude_memory(ceo_db, emb, doc, project_id=project_id)
+        state.mark_doc(md_path, project_id)
+        synced += result.get("imported", 0)
+        skipped += result.get("skipped", 0)
+
+    state.save()
+    return {"synced": synced, "skipped": skipped}
+
+
+def sync_single_memory_file(
+    ceo_db,
+    emb,
+    file_path: str,
+    cwd: str,
+    state: "ImportState | None" = None,
+) -> dict:
+    """Sync a single Claude auto-memory file into CEO Brain.
+
+    Called from PostToolUse hook when we know the exact file that was written.
+
+    Returns {"synced": 1, "skipped": 0} or {"synced": 0, "skipped": 1}.
+    """
+    from memory_core.project_detect import detect_project
+
+    if os.path.basename(file_path) == "MEMORY.md":
+        return {"synced": 0, "skipped": 1}
+
+    if state is None:
+        state = ImportState()
+
+    if state.is_doc_current(file_path):
+        return {"synced": 0, "skipped": 1}
+
+    content = _read_file(file_path)
+    if not content:
+        return {"synced": 0, "skipped": 1}
+
+    project_id = detect_project(ceo_db, cwd=cwd, emb=emb) or ""
+    git_remote, github_url = _extract_git_info(cwd)
+
+    doc = DocInfo(
+        path=file_path, content=content, doc_type="claude_memory",
+        project_name=os.path.basename(cwd) if cwd else "",
+        cwd=cwd, git_remote=git_remote, github_url=github_url,
+    )
+    result = ingest_claude_memory(ceo_db, emb, doc, project_id=project_id)
+    state.mark_doc(file_path, project_id)
+    state.save()
+
+    return {"synced": result.get("imported", 0), "skipped": result.get("skipped", 0)}
 
 
 def _read_file(path: str) -> str:
@@ -908,8 +1168,26 @@ def run_import(
                 else:
                     # Remote: fall through to ingest API
                     _ingest_doc_via_api(transport, doc, state, stats, total_sessions, on_progress)
+            elif doc.doc_type == "claude_memory":
+                # Auto-memory: direct parse, no LLM needed
+                from memory_core.transport import LocalTransport as _LT2
+                if isinstance(transport, _LT2):
+                    ceo_db = transport._get_ceo_db()
+                    emb_engine = transport._get_emb()
+                    from memory_core.project_detect import detect_project
+                    pid = detect_project(ceo_db, cwd=doc.cwd, emb=emb_engine) or ""
+                    r = ingest_claude_memory(ceo_db, emb_engine, doc, project_id=pid)
+                    state.mark_doc(doc.path, pid)
+                    stats["docs_imported"] += 1
+                    if on_progress:
+                        on_progress(
+                            total_sessions, stats["docs_imported"],
+                            f"doc: auto-memory/{doc.project_name} ({r.get('entity_type', '?')})",
+                        )
+                else:
+                    _ingest_doc_via_api(transport, doc, state, stats, total_sessions, on_progress)
             else:
-                # CLAUDE.md, claude_memory, cursor_rule — send to LLM extraction
+                # CLAUDE.md, cursor_rule — send to LLM extraction
                 _ingest_doc_via_api(transport, doc, state, stats, total_sessions, on_progress)
 
         except Exception as e:

@@ -671,6 +671,11 @@ def _install_claude_hooks(server_url: str) -> bool:
                      "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
                      "timeout": 60},
                 ]}],
+                "PostToolUse": [{"matcher": "Write|Edit", "hooks": [
+                    {"type": "command",
+                     "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+                     "timeout": 30},
+                ]}],
             },
         }
         with open(os.path.join(plugin_dir, "hooks", "hooks.json"), "w") as f:
@@ -721,9 +726,15 @@ def _install_claude_hooks(server_url: str) -> bool:
             "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
             "timeout": 60,
         }]}
+        ptu_entry = {"matcher": "Write|Edit", "hooks": [{
+            "type": "command",
+            "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+            "timeout": 30,
+        }]}
         for event, entry in [
             ("SessionStart", http_entry), ("UserPromptSubmit", http_entry),
             ("Stop", cmd_entry), ("SessionEnd", cmd_entry),
+            ("PostToolUse", ptu_entry),
         ]:
             event_hooks = hooks.get(event, [])
             if not isinstance(event_hooks, list):
