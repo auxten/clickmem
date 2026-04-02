@@ -23,6 +23,7 @@ logger = logging.getLogger("clickmem.import")
 
 _CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 _CURSOR_PROJECTS_DIR = os.path.expanduser("~/.cursor/projects")
+_CODEX_DIR = os.path.expanduser("~/.codex")
 _OPENCLAW_DIR = os.path.expanduser("~/.openclaw")
 
 _HOSTNAME = socket.gethostname()
@@ -150,6 +151,24 @@ def discover_agents() -> list[AgentInfo]:
     cr_hook = _check_cursor_hooks()
     agents.append(AgentInfo("cursor", cr_dir, cr_sessions, 0, cr_hook))
 
+    # Codex
+    cx_dir = _CODEX_DIR
+    cx_sessions = 0
+    cx_docs = 0
+    if os.path.isdir(cx_dir):
+        sessions_dir = os.path.join(cx_dir, "sessions")
+        if os.path.isdir(sessions_dir):
+            for root, _dirs, files in os.walk(sessions_dir):
+                cx_sessions += sum(1 for f in files if f.startswith("rollout-") and f.endswith(".jsonl"))
+        agents_md = os.path.join(cx_dir, "AGENTS.md")
+        if os.path.isfile(agents_md):
+            cx_docs += 1
+        mem_dir = os.path.join(cx_dir, "memories")
+        if os.path.isdir(mem_dir):
+            cx_docs += len(glob.glob(os.path.join(mem_dir, "*.md")))
+    cx_hook = _check_codex_hooks()
+    agents.append(AgentInfo("codex", cx_dir, cx_sessions, cx_docs, cx_hook))
+
     # OpenClaw
     oc_dir = _OPENCLAW_DIR
     oc_count = 0
@@ -186,6 +205,22 @@ def _check_claude_hooks() -> bool:
 def _check_cursor_hooks() -> bool:
     plugin_dir = os.path.expanduser("~/.cursor/hooks/clickmem")
     return os.path.exists(plugin_dir)
+
+
+def _check_codex_hooks() -> bool:
+    """Check if Codex has clickmem hooks configured."""
+    # Check global ~/.codex/hooks.json
+    hooks_path = os.path.join(_CODEX_DIR, "hooks.json")
+    if os.path.isfile(hooks_path):
+        try:
+            with open(hooks_path) as f:
+                data = json.load(f)
+            raw = json.dumps(data)
+            if "clickmem" in raw or "9527" in raw:
+                return True
+        except (json.JSONDecodeError, OSError):
+            pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +490,157 @@ class CursorReader:
 
 
 # ---------------------------------------------------------------------------
+# Codex reader
+# ---------------------------------------------------------------------------
+
+class CodexReader:
+    """Read conversation sessions from OpenAI Codex CLI rollout files.
+
+    Codex stores sessions as JSONL in ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``.
+    Each line has ``{timestamp, type, payload}``.  We extract user and assistant
+    messages from ``response_item`` entries with ``payload.type == "message"``.
+    """
+
+    def __init__(self, base_dir: str | None = None):
+        self._base = base_dir or _CODEX_DIR
+
+    def iter_sessions(self, since: float | None = None) -> Iterator[SessionInfo]:
+        sessions_dir = os.path.join(self._base, "sessions")
+        if not os.path.isdir(sessions_dir):
+            return
+
+        all_jsonl: list[str] = []
+        for root, _dirs, files in os.walk(sessions_dir):
+            for f in files:
+                if f.endswith(".jsonl") and f.startswith("rollout-"):
+                    all_jsonl.append(os.path.join(root, f))
+
+        all_jsonl.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+
+        for jsonl_path in all_jsonl:
+            if since and os.path.getmtime(jsonl_path) < since:
+                continue
+            info = self._parse_session(jsonl_path)
+            if info and len(info.text) >= 50:
+                yield info
+
+    def _parse_session(self, path: str) -> SessionInfo | None:
+        session_id = Path(path).stem  # rollout-<ts>-<uuid>
+        messages: list[str] = []
+        cwd = ""
+        git_remote = ""
+        git_branch = ""
+        timestamp = ""
+        version = ""
+        model = ""
+
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    rec_type = obj.get("type", "")
+                    payload = obj.get("payload", {})
+                    if not isinstance(payload, dict):
+                        continue
+
+                    # Extract metadata from session_meta
+                    if rec_type == "session_meta":
+                        if not cwd:
+                            cwd = payload.get("cwd", "")
+                        if not timestamp:
+                            timestamp = payload.get("timestamp", "") or obj.get("timestamp", "")
+                        if not version:
+                            version = payload.get("cli_version", "")
+                        git_info = payload.get("git", {})
+                        if isinstance(git_info, dict):
+                            if not git_remote:
+                                git_remote = git_info.get("repository_url", "")
+                            if not git_branch:
+                                git_branch = git_info.get("branch", "")
+                        continue
+
+                    # Extract cwd/model from turn_context
+                    if rec_type == "turn_context":
+                        if not cwd:
+                            cwd = payload.get("cwd", "")
+                        if not model:
+                            model = payload.get("model", "")
+                        continue
+
+                    # Extract user/assistant messages from response_item
+                    if rec_type == "response_item" and payload.get("type") == "message":
+                        role = payload.get("role", "")
+                        if role not in ("user", "assistant"):
+                            continue  # skip developer/system messages
+                        content = payload.get("content", [])
+                        text = self._extract_text(content)
+                        if text:
+                            messages.append(f"{role}: {text}")
+
+                    # Also capture user_message from event_msg
+                    if rec_type == "event_msg" and payload.get("type") == "user_message":
+                        user_msg = payload.get("message", "")
+                        if user_msg and len(user_msg) > 5:
+                            messages.append(f"user: {user_msg}")
+
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning("Failed to read Codex session %s: %s", path, e)
+            return None
+
+        if not messages:
+            return None
+
+        combined = "\n".join(messages)
+        project_name = os.path.basename(cwd) if cwd else ""
+        github_url = _normalize_github_url(git_remote) if git_remote else ""
+        if not github_url and cwd:
+            _, github_url = _extract_git_info(cwd)
+
+        return SessionInfo(
+            session_id=session_id,
+            text=combined,
+            source="codex",
+            cwd=cwd,
+            timestamp=timestamp,
+            project_name=project_name,
+            git_remote=git_remote,
+            github_url=github_url,
+            git_branch=git_branch,
+            hostname=_HOSTNAME,
+            agent_version=version,
+        )
+
+    @staticmethod
+    def _extract_text(content) -> str:
+        """Extract text from Codex content array: [{type: "input_text"|"output_text", text: "..."}]."""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text", "")
+                    if text:
+                        # Skip developer permission/context blocks
+                        if text.startswith("<permissions ") or text.startswith("<app-context>"):
+                            continue
+                        if text.startswith("<collaboration_mode>") or text.startswith("<skills_instructions>"):
+                            continue
+                        if text.startswith("<environment_context>"):
+                            continue
+                        parts.append(text)
+            return "\n".join(p for p in parts if p).strip()
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Knowledge doc discovery
 # ---------------------------------------------------------------------------
 
@@ -538,6 +724,45 @@ def discover_knowledge_docs(cwd_set: set[str]) -> list[DocInfo]:
             if content:
                 docs.append(DocInfo(
                     path=rule_path, content=content, doc_type="cursor_rule",
+                    project_name="global", cwd="",
+                ))
+
+    # 4. Codex AGENTS.md (global and per-project)
+    codex_global_agents = os.path.join(_CODEX_DIR, "AGENTS.md")
+    if os.path.isfile(codex_global_agents) and codex_global_agents not in seen_paths:
+        content = _read_file(codex_global_agents)
+        if content:
+            seen_paths.add(codex_global_agents)
+            docs.append(DocInfo(
+                path=codex_global_agents, content=content, doc_type="AGENTS.md",
+                project_name="global", cwd="",
+            ))
+
+    # Per-project .codex/AGENTS.md
+    for cwd in cwd_set:
+        codex_proj_agents = os.path.join(cwd, ".codex", "AGENTS.md")
+        if os.path.isfile(codex_proj_agents) and codex_proj_agents not in seen_paths:
+            content = _read_file(codex_proj_agents)
+            if content:
+                seen_paths.add(codex_proj_agents)
+                git_remote, github_url = _extract_git_info(cwd)
+                docs.append(DocInfo(
+                    path=codex_proj_agents, content=content, doc_type="AGENTS.md",
+                    project_name=os.path.basename(cwd), cwd=cwd,
+                    git_remote=git_remote, github_url=github_url,
+                ))
+
+    # 5. Codex memories (~/.codex/memories/)
+    codex_memories = os.path.join(_CODEX_DIR, "memories")
+    if os.path.isdir(codex_memories):
+        for md_path in glob.glob(os.path.join(codex_memories, "*.md")):
+            if md_path in seen_paths:
+                continue
+            seen_paths.add(md_path)
+            content = _read_file(md_path)
+            if content:
+                docs.append(DocInfo(
+                    path=md_path, content=content, doc_type="claude_memory",
                     project_name="global", cwd="",
                 ))
 
@@ -1084,6 +1309,8 @@ def run_import(
         readers.append(("claude-code", ClaudeCodeReader().iter_sessions()))
     if "cursor" in agents or "all" in agents:
         readers.append(("cursor", CursorReader().iter_sessions()))
+    if "codex" in agents or "all" in agents:
+        readers.append(("codex", CodexReader().iter_sessions()))
 
     total_sessions = 0
     for agent_name, session_iter in readers:

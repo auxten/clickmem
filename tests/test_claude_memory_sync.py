@@ -1,13 +1,15 @@
-"""Tests for Claude Code auto-memory direct sync (no LLM extraction)."""
+"""Tests for Claude Code auto-memory direct sync and Codex reader."""
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
 import pytest
 
 from memory_core.import_agent import (
+    CodexReader,
     DocInfo,
     ImportState,
     _infer_domain,
@@ -356,3 +358,151 @@ class TestSyncSingleFile:
             ceo_db, mock_emb, str(fpath), cwd, state=state,
         )
         assert result["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# CodexReader
+# ---------------------------------------------------------------------------
+
+_CODEX_SESSION_META = json.dumps({
+    "timestamp": "2026-03-21T12:36:12.402Z",
+    "type": "session_meta",
+    "payload": {
+        "id": "019d1065-test-uuid",
+        "timestamp": "2026-03-21T12:36:05.599Z",
+        "cwd": "/tmp/test-project",
+        "cli_version": "0.116.0-alpha.1",
+        "source": "vscode",
+        "model_provider": "openai",
+        "git": {
+            "commit_hash": "abc123",
+            "branch": "main",
+            "repository_url": "git@github.com:user/test.git",
+        },
+    },
+})
+
+_CODEX_TURN_CONTEXT = json.dumps({
+    "timestamp": "2026-03-21T12:36:12.404Z",
+    "type": "turn_context",
+    "payload": {
+        "turn_id": "turn-001",
+        "cwd": "/tmp/test-project",
+        "model": "gpt-5.4",
+    },
+})
+
+_CODEX_USER_MSG = json.dumps({
+    "timestamp": "2026-03-21T12:36:12.404Z",
+    "type": "response_item",
+    "payload": {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "Fix the login bug in auth.py"}],
+    },
+})
+
+_CODEX_ASSISTANT_MSG = json.dumps({
+    "timestamp": "2026-03-21T12:36:15.000Z",
+    "type": "response_item",
+    "payload": {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "I found the issue in auth.py line 42. The session token was not being validated correctly."}],
+    },
+})
+
+_CODEX_DEVELOPER_MSG = json.dumps({
+    "timestamp": "2026-03-21T12:36:12.404Z",
+    "type": "response_item",
+    "payload": {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": "<permissions instructions>sandbox stuff</permissions instructions>"}],
+    },
+})
+
+_CODEX_FUNCTION_CALL = json.dumps({
+    "timestamp": "2026-03-21T12:36:13.000Z",
+    "type": "response_item",
+    "payload": {
+        "type": "function_call",
+        "name": "shell",
+        "arguments": "{\"command\": \"cat auth.py\"}",
+        "call_id": "call-001",
+    },
+})
+
+
+class TestCodexReader:
+    def _write_session(self, tmp_path, lines):
+        sessions_dir = tmp_path / "sessions" / "2026" / "03" / "21"
+        sessions_dir.mkdir(parents=True)
+        fpath = sessions_dir / "rollout-2026-03-21T12-00-00-test-uuid.jsonl"
+        fpath.write_text("\n".join(lines) + "\n")
+        return tmp_path
+
+    def test_parses_user_assistant_messages(self, tmp_path):
+        base = self._write_session(tmp_path, [
+            _CODEX_SESSION_META,
+            _CODEX_TURN_CONTEXT,
+            _CODEX_USER_MSG,
+            _CODEX_ASSISTANT_MSG,
+        ])
+        reader = CodexReader(str(base))
+        sessions = list(reader.iter_sessions())
+        assert len(sessions) == 1
+        s = sessions[0]
+        assert s.source == "codex"
+        assert s.cwd == "/tmp/test-project"
+        assert s.git_branch == "main"
+        assert "Fix the login bug" in s.text
+        assert "session token" in s.text
+
+    def test_skips_developer_messages(self, tmp_path):
+        base = self._write_session(tmp_path, [
+            _CODEX_SESSION_META,
+            _CODEX_DEVELOPER_MSG,
+            _CODEX_USER_MSG,
+            _CODEX_ASSISTANT_MSG,
+        ])
+        reader = CodexReader(str(base))
+        sessions = list(reader.iter_sessions())
+        assert len(sessions) == 1
+        # Developer message should not appear
+        assert "sandbox" not in sessions[0].text
+        assert "permissions" not in sessions[0].text
+
+    def test_skips_function_calls(self, tmp_path):
+        base = self._write_session(tmp_path, [
+            _CODEX_SESSION_META,
+            _CODEX_USER_MSG,
+            _CODEX_FUNCTION_CALL,
+            _CODEX_ASSISTANT_MSG,
+        ])
+        reader = CodexReader(str(base))
+        sessions = list(reader.iter_sessions())
+        assert len(sessions) == 1
+        # Function call should not appear as a message
+        assert "cat auth.py" not in sessions[0].text
+
+    def test_empty_session_skipped(self, tmp_path):
+        base = self._write_session(tmp_path, [
+            _CODEX_SESSION_META,
+            _CODEX_TURN_CONTEXT,
+        ])
+        reader = CodexReader(str(base))
+        sessions = list(reader.iter_sessions())
+        assert len(sessions) == 0
+
+    def test_extracts_git_info(self, tmp_path):
+        base = self._write_session(tmp_path, [
+            _CODEX_SESSION_META,
+            _CODEX_USER_MSG,
+            _CODEX_ASSISTANT_MSG,
+        ])
+        reader = CodexReader(str(base))
+        sessions = list(reader.iter_sessions())
+        s = sessions[0]
+        assert s.git_remote == "git@github.com:user/test.git"
+        assert s.agent_version == "0.116.0-alpha.1"

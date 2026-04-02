@@ -586,7 +586,7 @@ app.add_typer(hooks_app)
 
 @hooks_app.command(name="install")
 def hooks_install(
-    agent: str = typer.Option("all", "--agent", "-a", help="Agent to install hooks for (claude-code|cursor|openclaw|all)"),
+    agent: str = typer.Option("all", "--agent", "-a", help="Agent to install hooks for (claude-code|cursor|codex|openclaw|all)"),
     server_url: str = typer.Option("http://127.0.0.1:9527", "--server-url", help="ClickMem server URL for hooks"),
 ):
     """Install hooks for AI agents so they automatically send data to ClickMem."""
@@ -601,6 +601,11 @@ def hooks_install(
         ok = _install_cursor_hooks()
         if ok:
             installed.append("cursor")
+
+    if agent in ("codex", "all"):
+        ok = _install_codex_hooks(server_url)
+        if ok:
+            installed.append("codex")
 
     if agent in ("openclaw", "all"):
         ok = _install_openclaw_hooks()
@@ -752,6 +757,58 @@ def _install_claude_hooks(server_url: str) -> bool:
         return True
     except Exception as e:
         console.print(f"  [red]Claude Code hook install failed: {e}[/red]")
+        return False
+
+
+def _install_codex_hooks(server_url: str) -> bool:
+    """Install ClickMem hooks for OpenAI Codex CLI.
+
+    Writes ~/.codex/hooks.json with the same event structure as Claude Code.
+    Codex supports: SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop.
+    """
+    codex_dir = os.path.expanduser("~/.codex")
+    if not os.path.isdir(codex_dir):
+        console.print("  Codex not installed; skipping")
+        return False
+
+    hook_url = f"{server_url}/hooks/claude-code"  # reuse same endpoint
+    hooks_path = os.path.join(codex_dir, "hooks.json")
+
+    try:
+        hooks_config = {
+            "hooks": {
+                "SessionStart": [{"hooks": [
+                    {"type": "command",
+                     "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+                     "timeout": 30},
+                ]}],
+                "UserPromptSubmit": [{"hooks": [
+                    {"type": "command",
+                     "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+                     "timeout": 30},
+                ]}],
+                "Stop": [{"hooks": [
+                    {"type": "command",
+                     "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+                     "timeout": 60},
+                ]}],
+                "PostToolUse": [{"matcher": "Write|Edit", "hooks": [
+                    {"type": "command",
+                     "command": f"curl -s -X POST -H 'Content-Type: application/json' -d @- {hook_url}",
+                     "timeout": 30},
+                ]}],
+            },
+        }
+
+        with open(hooks_path, "w") as f:
+            json.dump(hooks_config, f, indent=2)
+            f.write("\n")
+
+        console.print(f"  Codex: hooks installed at {hooks_path}")
+        console.print(f"  Codex: hooks -> {hook_url}")
+        return True
+    except Exception as e:
+        console.print(f"  [red]Codex hook install failed: {e}[/red]")
         return False
 
 
@@ -920,7 +977,7 @@ def setup_cmd(
 @app.command(name="import")
 def import_cmd(
     agent: str = typer.Option("all", "--agent", "-a",
-                              help="Agent to import from (claude-code|cursor|openclaw|all)"),
+                              help="Agent to import from (claude-code|cursor|codex|openclaw|all)"),
     foreground: bool = typer.Option(False, "--foreground", "-f",
                                    help="Run synchronously in foreground (default: background)"),
     remote: Optional[str] = typer.Option(None, "--remote", "-r",
