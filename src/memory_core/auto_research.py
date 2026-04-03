@@ -92,10 +92,14 @@ def parse_probes(llm_output: str) -> list[dict]:
             continue
         query = entry.get("query", "")
         probe_words = entry.get("probe_words", [])
+        # Handle LLMs that return probe_words as comma-separated string
+        if isinstance(probe_words, str):
+            probe_words = [w.strip() for w in probe_words.split(",") if w.strip()]
+            entry["probe_words"] = probe_words
         if isinstance(query, str) and query.strip() and isinstance(probe_words, list) and probe_words:
             valid.append(entry)
         else:
-            logger.warning("Skipping invalid probe: %s", json.dumps(entry)[:120])
+            logger.warning("Skipping invalid probe: %s", json.dumps(entry, ensure_ascii=False)[:120])
     return valid
 
 
