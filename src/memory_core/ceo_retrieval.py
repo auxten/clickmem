@@ -399,10 +399,11 @@ def ceo_search(
         content_text = r.get("content", "")
         kw_frac = _keyword_score(content_text, keywords, entities=entities) if keywords else 0.0
         # Length normalization: long content naturally matches more keywords,
-        # penalize to prevent decisions from dominating over shorter facts/principles
-        content_len = len(content_text) + len(meta.get("reasoning", ""))
-        if content_len > 100:
-            kw_frac *= min(1.0, 100.0 / content_len)
+        # penalize to prevent decisions from dominating over shorter facts/principles.
+        # Only penalize the reasoning portion — title+choice are fair game.
+        reasoning_len = len(meta.get("reasoning", ""))
+        if reasoning_len > 100:
+            kw_frac *= min(1.0, 100.0 / reasoning_len)
         kw_boost = min(_KW_BONUS_CAP, 1.0 + _KW_BONUS_WEIGHT * kw_frac)
 
         # Entity exact-match boost: when query has named entities (IP, path, user@host)
