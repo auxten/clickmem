@@ -666,6 +666,29 @@ def hooks_status_cmd():
         console.print(f"  {a.name}: {status}")
 
 
+def _install_skill_symlink(skill_name: str, target_dir: str, agent_label: str) -> None:
+    """Symlink a skill from the repo's skills/ directory into an agent's skills dir."""
+    skill_src = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "skills", skill_name,
+    )
+    if not os.path.isdir(skill_src):
+        skill_src = os.path.expanduser(f"~/clickmem/skills/{skill_name}")
+    if not os.path.isdir(skill_src):
+        return
+
+    try:
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+        if os.path.islink(target_dir):
+            os.unlink(target_dir)
+        elif os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        os.symlink(os.path.abspath(skill_src), target_dir)
+        console.print(f"  {agent_label}: skill installed at {target_dir}")
+    except Exception as e:
+        console.print(f"  [yellow]{agent_label}: skill install failed: {e}[/yellow]")
+
+
 def _install_claude_hooks(server_url: str) -> bool:
     """Install ClickMem as a Claude Code plugin with hooks.
 
@@ -791,6 +814,14 @@ def _install_claude_hooks(server_url: str) -> bool:
 
         console.print(f"  Claude Code: plugin installed at {plugin_dir}")
         console.print(f"  Claude Code: hooks -> {hook_url}")
+
+        # Install clickmem-research skill
+        _install_skill_symlink(
+            "clickmem-research",
+            os.path.expanduser("~/.claude/skills/clickmem-research"),
+            "Claude Code",
+        )
+
         return True
     except Exception as e:
         console.print(f"  [red]Claude Code hook install failed: {e}[/red]")
@@ -843,6 +874,14 @@ def _install_codex_hooks(server_url: str) -> bool:
 
         console.print(f"  Codex: hooks installed at {hooks_path}")
         console.print(f"  Codex: hooks -> {hook_url}")
+
+        # Install clickmem-research skill
+        _install_skill_symlink(
+            "clickmem-research",
+            os.path.expanduser("~/.codex/skills/clickmem-research"),
+            "Codex",
+        )
+
         return True
     except Exception as e:
         console.print(f"  [red]Codex hook install failed: {e}[/red]")
@@ -874,6 +913,14 @@ def _install_cursor_hooks() -> bool:
             shutil.rmtree(dst)
         os.symlink(os.path.abspath(src), dst)
         console.print(f"  Cursor: {dst} -> {src}")
+
+        # Install clickmem-research skill
+        _install_skill_symlink(
+            "clickmem-research",
+            os.path.expanduser("~/.cursor/skills/clickmem-research"),
+            "Cursor",
+        )
+
         return True
     except Exception as e:
         console.print(f"  [red]Cursor hook install failed: {e}[/red]")
