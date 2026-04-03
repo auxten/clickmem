@@ -17,7 +17,9 @@ from typing import Callable
 # CJK + Latin tokenization
 # ---------------------------------------------------------------------------
 
-_WORD_RE = re.compile(r'[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]+')
+# Matches: dot-prefixed paths (.cursor-plugin), dunder names (__del__),
+# alphanumeric tokens, and CJK characters
+_WORD_RE = re.compile(r'\.[\w.\-]+|__\w+__|[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]+')
 _CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]+')
 
 
@@ -84,7 +86,15 @@ def analyze_query_fast(query: str) -> QueryAnalysis:
         if t not in result.keywords:
             result.keywords.append(t)
 
-    # 4. Split sub-intents
+    # 4. Generate bigrams from Latin tokens for multi-word phrase matching
+    # e.g. ["Decision", "Tree"] → "Decision Tree"
+    latin_tokens = [t for t in tokens if re.match(r'[a-zA-Z]', t)]
+    for i in range(len(latin_tokens) - 1):
+        bigram = f"{latin_tokens[i]} {latin_tokens[i+1]}"
+        if bigram not in result.expanded_terms:
+            result.expanded_terms.append(bigram)
+
+    # 5. Split sub-intents
     parts = _SPLIT_RE.split(query)
     parts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 3]
     if len(parts) > 1:

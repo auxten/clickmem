@@ -32,7 +32,9 @@ _KW_BONUS_CAP = 1.5  # max keyword boost
 _RRF_K = 60  # reciprocal rank fusion constant
 
 # Fallback regex tokenizer (used only when LLM is unavailable)
-_WORD_RE = re.compile(r'[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]+')
+# Matches: dot-prefixed paths (.cursor-plugin), dunder names (__del__),
+# alphanumeric tokens, and CJK characters
+_WORD_RE = re.compile(r'\.[\w.\-]+|__\w+__|[a-zA-Z0-9_.\-@/]+|[\u4e00-\u9fff\u3400-\u4dbf]+')
 
 
 def _tokenize_query_regex(query: str) -> list[str]:
@@ -76,12 +78,19 @@ def _tokenize_query(query: str, llm_complete=None) -> list[str]:
     return _tokenize_query_regex(query)
 
 
-def _keyword_score(content: str, keywords: list[str]) -> float:
-    """Fraction of query keywords found in content (case-insensitive)."""
+def _keyword_score(content: str, keywords: list[str],
+                    entities: list[str] | None = None) -> float:
+    """Fraction of query keywords found in content + entities (case-insensitive).
+
+    Also checks the entities list (IPs, paths, usernames) for exact matches,
+    which is critical for infrastructure lookups.
+    """
     if not keywords:
         return 0.0
-    content_lower = content.lower()
-    hits = sum(1 for kw in keywords if kw.lower() in content_lower)
+    searchable = content.lower()
+    if entities:
+        searchable += " " + " ".join(entities).lower()
+    hits = sum(1 for kw in keywords if kw.lower() in searchable)
     return hits / len(keywords)
 
 
@@ -235,7 +244,7 @@ def ceo_search(
                 if domain and p.domain != domain:
                     continue
                 dist = ceo_db._cosine_dist(query_vec, p.embedding) if p.embedding else 1.0
-                score = (1.0 - dist) * (0.5 + 0.5 * p.confidence)
+                score = (1.0 - dist) * (0.7 + 0.3 * p.confidence)
                 score *= _project_boost(p.project_id)
                 # Apply scope scoring for principles
                 scope_mult = _scope_score(p.scope_embedding, query_vec, session_topic_vec, task_context_vec)
@@ -298,6 +307,7 @@ def ceo_search(
                         "category": ft.category,
                         "domain": ft.domain,
                         "project_id": ft.project_id,
+                        "entities": ft.entities or [],
                     },
                 })
 
@@ -376,13 +386,36 @@ def ceo_search(
     for r in kw_results:
         by_id.setdefault(r["id"], r)
 
+    # Named entities from query (IPs, paths, user@host) for exact-match boosting
+    query_entities_lower = {e.lower() for e in qa.named_entities}
+
     # Compute final score: vector_score * keyword_boost, with RRF bonus for keyword hits
     for rid, r in by_id.items():
         base_score = r.get("score", 0.0)
 
-        # Keyword boost: fraction of keywords found in content
-        kw_frac = _keyword_score(r.get("content", ""), keywords) if keywords else 0.0
+        # Keyword boost: fraction of keywords found in content + entities
+        meta = r.get("metadata", {}) or {}
+        entities = meta.get("entities") or meta.get("tags") or []
+        content_text = r.get("content", "")
+        kw_frac = _keyword_score(content_text, keywords, entities=entities) if keywords else 0.0
+        # Length normalization: long content naturally matches more keywords,
+        # penalize to prevent decisions from dominating over shorter facts/principles
+        content_len = len(content_text) + len(meta.get("reasoning", ""))
+        if content_len > 100:
+            kw_frac *= min(1.0, 100.0 / content_len)
         kw_boost = min(_KW_BONUS_CAP, 1.0 + _KW_BONUS_WEIGHT * kw_frac)
+
+        # Entity exact-match boost: when query has named entities (IP, path, user@host)
+        # and a result's entities list contains them, give a strong boost
+        if query_entities_lower and entities:
+            result_entities_lower = {e.lower() for e in entities}
+            entity_hits = query_entities_lower & result_entities_lower
+            if entity_hits:
+                kw_boost *= 1.5  # strong boost for exact entity match
+
+        # Fact specificity boost: facts with high keyword relevance are precise matches
+        if r.get("entity_type") == "fact" and kw_frac > 0.5:
+            kw_boost *= 1.2
 
         # RRF bonus: reward items found by both strategies
         rrf = 0.0
