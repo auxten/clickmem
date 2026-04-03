@@ -68,6 +68,10 @@ Cases auto-generated from real conversations by the auto-research system.
 | 26 | Why was the direct push to main branch rejected and what was the alternative? | `push protection`, `PR`, `main branch`, `feature branch` | 5 | ⚠️ found PR only |
 | 27 | What is the status of the P0 task 'fix test failure'? | `P0`, `fix test failure`, `resolved` | 5 | ⚠️ found P0 only |
 | 28 | How does the clickmem agent manage multiple tasks? | `TaskCreate`, `TaskList`, `TaskGet` | 5 | ❌ data_gap |
+| 29 | What is the workaround for the aiDataConsent default false issue in AndyNote? | `Settings`, `AI Data Processing` | 5 | ✅ |
+| 30 | What was the root cause of test failures in chdb-supervisor? | `wrong directory`, `datastore` | 5 | ❌ scope mismatch |
+| 31 | How was the CLI memory status command fixed to work without a running server? | `local fallback` | 5 | ❌ data_gap |
+| 32 | What code changes fixed the [object Object] garbage serialization in ClickMem? | `GARBAGE_PATTERN_THRESHOLD` | 5 | ❌ data_gap |
 
 ## Summary (2026-04-03, keyword+scoring improvements)
 
