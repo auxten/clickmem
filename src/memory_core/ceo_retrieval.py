@@ -27,8 +27,8 @@ _SCOPE_MATCH_BOOST = 1.2
 _SCOPE_MISMATCH_PENALTY = 0.3
 
 # Keyword matching constants
-_KW_BONUS_WEIGHT = 0.3  # keyword bonus multiplier
-_KW_BONUS_CAP = 1.5  # max keyword boost
+_KW_BONUS_WEIGHT = 0.6  # keyword bonus multiplier (was 0.3: too weak to override vector gaps)
+_KW_BONUS_CAP = 2.0  # max keyword boost (was 1.5)
 _RRF_K = 60  # reciprocal rank fusion constant
 
 # Fallback regex tokenizer (used only when LLM is unavailable)
@@ -414,9 +414,9 @@ def ceo_search(
             if entity_hits:
                 kw_boost *= 1.5  # strong boost for exact entity match
 
-        # Fact specificity boost: facts with high keyword relevance are precise matches
-        if r.get("entity_type") == "fact" and kw_frac > 0.5:
-            kw_boost *= 1.2
+        # Fact specificity boost: facts with keyword relevance are precise matches
+        if r.get("entity_type") == "fact" and kw_frac > 0.3:
+            kw_boost *= 1.3
 
         # RRF bonus: reward items found by both strategies
         rrf = 0.0
