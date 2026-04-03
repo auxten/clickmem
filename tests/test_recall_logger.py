@@ -1,7 +1,6 @@
 """Tests for recall_logger module."""
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,70 +9,102 @@ import pytest
 
 class TestRecallLogger:
 
-    def test_log_disabled_by_default(self, tmp_path):
-        """When CLICKMEM_RECALL_LOG is not set, nothing is written."""
-        log_file = tmp_path / "recall.jsonl"
-        with patch.dict(os.environ, {"CLICKMEM_RECALL_LOG": "0"}):
-            # Re-import to pick up env change
-            import memory_core.recall_logger as rl
-            old_enabled = rl._ENABLED
-            rl._ENABLED = False
-            try:
-                rl.log_recall(
-                    query="test", project_id="p1", session_id="s1",
-                    results=[{"id": "r1", "entity_type": "decision", "score": 0.9}],
-                    latency_ms=5.0,
-                )
-            finally:
-                rl._ENABLED = old_enabled
-        assert not log_file.exists()
-
     def test_log_writes_jsonl(self, tmp_path):
-        """When enabled, a valid JSONL entry is appended."""
-        log_file = tmp_path / "recall.jsonl"
+        """A valid JSONL entry is appended with full result content."""
+        log_dir = tmp_path / "logs"
         import memory_core.recall_logger as rl
 
-        old_enabled = rl._ENABLED
-        rl._ENABLED = True
-        with patch.object(rl, "_log_path", return_value=log_file):
-            try:
-                rl.log_recall(
-                    query="test query",
-                    project_id="proj-123",
-                    session_id="sess-456",
-                    results=[
-                        {"id": "id-1", "entity_type": "decision", "score": 0.95},
-                        {"id": "id-2", "entity_type": "principle", "score": 0.80},
-                    ],
-                    latency_ms=12.3,
-                )
-            finally:
-                rl._ENABLED = old_enabled
+        with patch.object(rl, "_log_dir", return_value=log_dir):
+            rl.log_recall(
+                query="test query",
+                project_id="proj-123",
+                session_id="sess-456",
+                results=[
+                    {"id": "id-1", "entity_type": "decision", "score": 0.95,
+                     "content": "Some decision content"},
+                    {"id": "id-2", "entity_type": "principle", "score": 0.80,
+                     "content": "Some principle"},
+                ],
+                latency_ms=12.3,
+                keywords=["test", "query"],
+                expanded_terms=["test query"],
+                named_entities=[],
+            )
 
+        log_file = log_dir / "recall.jsonl"
         assert log_file.exists()
         lines = log_file.read_text().strip().split("\n")
         assert len(lines) == 1
         entry = json.loads(lines[0])
+        assert entry["type"] == "recall"
         assert entry["query"] == "test query"
         assert entry["project_id"] == "proj-123"
         assert entry["result_count"] == 2
         assert entry["top_score"] == 0.95
         assert entry["latency_ms"] == 12.3
-        assert len(entry["top_results"]) == 2
+        assert entry["keywords"] == ["test", "query"]
+        assert len(entry["results"]) == 2
+        assert entry["results"][0]["content"] == "Some decision content"
+
+    def test_log_ingest(self, tmp_path):
+        """Ingest events are logged to ingest.jsonl."""
+        log_dir = tmp_path / "logs"
+        import memory_core.recall_logger as rl
+
+        with patch.object(rl, "_log_dir", return_value=log_dir):
+            rl.log_ingest(
+                session_id="sess-789",
+                source="cursor",
+                extracted={
+                    "episodes": ["ep1", "ep2"],
+                    "decisions": ["d1"],
+                    "principles": [],
+                    "facts": ["f1"],
+                },
+                latency_ms=500.0,
+            )
+
+        log_file = log_dir / "ingest.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "ingest"
+        assert entry["session_id"] == "sess-789"
+        assert entry["source"] == "cursor"
+        assert entry["extracted"]["episodes"] == 2
+        assert entry["extracted"]["decisions"] == 1
+        assert entry["extracted"]["facts"] == 1
+
+    def test_log_error(self, tmp_path):
+        """Error events are logged to error.jsonl."""
+        log_dir = tmp_path / "logs"
+        import memory_core.recall_logger as rl
+
+        with patch.object(rl, "_log_dir", return_value=log_dir):
+            rl.log_error(
+                operation="ceo_search",
+                error="Connection timeout",
+                context={"query": "test"},
+            )
+
+        log_file = log_dir / "error.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["type"] == "error"
+        assert entry["operation"] == "ceo_search"
+        assert entry["error"] == "Connection timeout"
 
     def test_log_rotation(self, tmp_path):
         """File is rotated when exceeding max size."""
-        log_file = tmp_path / "recall.jsonl"
-        rotated = tmp_path / "recall.jsonl.1"
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / "recall.jsonl"
+        rotated = log_dir / "recall.jsonl.1"
 
-        # Create a file just over the rotation threshold
         import memory_core.recall_logger as rl
         old_max = rl._MAX_SIZE
         rl._MAX_SIZE = 100  # 100 bytes for testing
-        old_enabled = rl._ENABLED
-        rl._ENABLED = True
 
-        with patch.object(rl, "_log_path", return_value=log_file):
+        with patch.object(rl, "_log_dir", return_value=log_dir):
             try:
                 # Write enough to exceed 100 bytes
                 log_file.write_text("x" * 150)
@@ -84,7 +115,6 @@ class TestRecallLogger:
                 )
             finally:
                 rl._MAX_SIZE = old_max
-                rl._ENABLED = old_enabled
 
         assert rotated.exists()
         assert log_file.exists()

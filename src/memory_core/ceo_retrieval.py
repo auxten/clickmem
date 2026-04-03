@@ -448,13 +448,16 @@ def ceo_search(
     if use_llm_rerank and llm_complete and len(candidates) > 1:
         candidates = _llm_rerank(query, candidates, llm_complete, top_k)
 
-    # Optional JSONL recall logging
+    # JSONL recall logging — always-on for traceability
     from memory_core.recall_logger import log_recall
     final = _mmr_diverse(candidates, top_k)
     log_recall(
         query=query, project_id=project_id or "",
         session_id=session_id or "", results=final,
         latency_ms=elapsed_ms,
+        keywords=keywords,
+        expanded_terms=qa.expanded_terms,
+        named_entities=qa.named_entities,
     )
 
     # MMR-style diversity: ensure we don't return too many of the same type

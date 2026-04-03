@@ -123,6 +123,8 @@ class LocalTransport:
                 r.setdefault("layer", _CEO_LAYER_MAP.get(r.get("entity_type", ""), "semantic"))
         except Exception as exc:
             _log.warning("CEO search failed: %s", exc, exc_info=True)
+            from memory_core.recall_logger import log_error
+            log_error("ceo_search", str(exc), {"query": query[:200]})
             ceo_results = []
 
         combined = old_results + ceo_results
@@ -265,7 +267,7 @@ class LocalTransport:
 
         db.mark_raw_processed(raw_id)
 
-        return {
+        ingest_result = {
             "raw_id": raw_id,
             "episodes": result.episode_ids,
             "decisions": result.decision_ids,
@@ -273,6 +275,16 @@ class LocalTransport:
             "facts": result.fact_ids,
             "project_updates": result.project_updates,
         }
+
+        # Log ingest event for traceability
+        from memory_core.recall_logger import log_ingest
+        log_ingest(
+            session_id=session_id,
+            source=source,
+            extracted=ingest_result,
+        )
+
+        return ingest_result
 
     def _trigger_refinement(self) -> None:
         """Start refinement in a background thread if not already running."""

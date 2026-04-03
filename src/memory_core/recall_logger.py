@@ -1,7 +1,12 @@
-"""Structured JSONL logger for recall queries.
+"""Structured JSONL logger for recall queries and system events.
 
-Gated by CLICKMEM_RECALL_LOG=1. Writes to ~/.openclaw/memory/recall.jsonl.
-Auto-rotates when file exceeds 10MB.
+Always-on logging for post-hoc analysis and debugging.
+Writes to ~/.openclaw/memory/logs/recall.jsonl (auto-rotates at 10MB).
+
+Log entry types:
+- "recall": every recall query with results, keywords, timing
+- "ingest": extraction events from session transcripts
+- "error": errors during recall/ingest pipeline
 """
 
 from __future__ import annotations
@@ -14,31 +19,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_ENABLED = os.environ.get("CLICKMEM_RECALL_LOG", "0") == "1"
 _MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
 
-def _log_path() -> Path:
+def _log_dir() -> Path:
     base = os.environ.get("CLICKMEM_DB_PATH", "")
     if base and base != ":memory:":
-        return Path(base).parent / "recall.jsonl"
-    return Path.home() / ".openclaw" / "memory" / "recall.jsonl"
+        return Path(base).parent / "logs"
+    return Path.home() / ".openclaw" / "memory" / "logs"
 
 
-def log_recall(
-    query: str,
-    project_id: str,
-    session_id: str,
-    results: list[dict],
-    latency_ms: float,
-) -> None:
-    """Append a recall entry to the JSONL log. No-op if disabled."""
-    if not _ENABLED:
-        return
-
+def _write_entry(filename: str, entry: dict) -> None:
+    """Append a JSONL entry with auto-rotation."""
     try:
-        path = _log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        log_dir = _log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / filename
 
         # Auto-rotate
         if path.exists() and path.stat().st_size > _MAX_SIZE:
@@ -47,21 +43,80 @@ def log_recall(
                 rotated.unlink()
             path.rename(rotated)
 
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "query": query[:200],
-            "project_id": project_id,
-            "session_id": session_id,
-            "result_count": len(results),
-            "top_score": results[0]["score"] if results else 0.0,
-            "latency_ms": round(latency_ms, 1),
-            "top_results": [
-                {"id": r["id"][:12], "type": r["entity_type"], "score": round(r["score"], 4)}
-                for r in results[:5]
-            ],
-        }
-
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as e:
-        logger.debug("Failed to write recall log: %s", e)
+        logger.debug("Failed to write log %s: %s", filename, e)
+
+
+def log_recall(
+    query: str,
+    project_id: str,
+    session_id: str,
+    results: list[dict],
+    latency_ms: float,
+    keywords: list[str] | None = None,
+    expanded_terms: list[str] | None = None,
+    named_entities: list[str] | None = None,
+) -> None:
+    """Log every recall query with full results for post-hoc analysis."""
+    entry = {
+        "type": "recall",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "query": query[:500],
+        "project_id": project_id,
+        "session_id": session_id,
+        "keywords": keywords or [],
+        "expanded_terms": expanded_terms or [],
+        "named_entities": named_entities or [],
+        "result_count": len(results),
+        "top_score": round(results[0]["score"], 4) if results else 0.0,
+        "latency_ms": round(latency_ms, 1),
+        "results": [
+            {
+                "id": r.get("id", "")[:16],
+                "entity_type": r.get("entity_type", r.get("layer", "")),
+                "score": round(r.get("score", 0), 4),
+                "content": r.get("content", "")[:200],
+            }
+            for r in results[:10]
+        ],
+    }
+    _write_entry("recall.jsonl", entry)
+
+
+def log_ingest(
+    session_id: str,
+    source: str,
+    extracted: dict,
+    latency_ms: float = 0.0,
+) -> None:
+    """Log extraction/ingest events from session transcripts."""
+    entry = {
+        "type": "ingest",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "source": source,
+        "latency_ms": round(latency_ms, 1),
+        "extracted": {
+            k: len(v) if isinstance(v, list) else v
+            for k, v in extracted.items()
+        },
+    }
+    _write_entry("ingest.jsonl", entry)
+
+
+def log_error(
+    operation: str,
+    error: str,
+    context: dict | None = None,
+) -> None:
+    """Log errors in the recall/ingest pipeline."""
+    entry = {
+        "type": "error",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "operation": operation,
+        "error": error[:500],
+        "context": context or {},
+    }
+    _write_entry("error.jsonl", entry)
