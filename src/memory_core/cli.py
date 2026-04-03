@@ -261,12 +261,19 @@ def backfill(
     """Reset processed raw transcripts that produced no entities, allowing re-extraction.
 
     Fixes data loss from a bug where raw transcripts were marked as processed
-    even when LLM extraction returned empty results.
+    even when LLM extraction returned empty results.  Uses the server API when
+    a server is running (avoids chDB lock conflict).
     """
-    from memory_core.db import MemoryDB
-    db = MemoryDB(_DB_PATH)
+    t = _get_transport()
 
-    # Step 1: Reset orphan processed raws
+    from memory_core.transport import LocalTransport
+    if not isinstance(t, LocalTransport):
+        console.print("[red]Backfill requires local transport (direct DB access)[/red]")
+        console.print("Stop the server first, or run this on the server machine without CLICKMEM_REMOTE")
+        raise typer.Exit(code=1)
+
+    db = t._get_db()
+
     if dry_run:
         rows = db._query_json(
             "SELECT count() as cnt FROM raw_transcripts "

@@ -276,6 +276,15 @@ async def maintain(req: MaintainRequest):
     return await asyncio.to_thread(t.maintain, dry_run=req.dry_run)
 
 
+@app.post("/v1/backfill", dependencies=[Depends(auth_dep)])
+async def backfill_endpoint():
+    """Reset processed raws with no entities so refinement can retry them."""
+    t = _get_transport()
+    db = t._get_db()
+    reset = await asyncio.to_thread(db.reset_orphan_processed_raws)
+    return {"reset": reset}
+
+
 _READONLY_SQL_PREFIXES = ("SELECT", "SHOW", "DESCRIBE", "EXISTS", "EXPLAIN")
 
 
