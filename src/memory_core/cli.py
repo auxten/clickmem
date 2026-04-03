@@ -881,6 +881,173 @@ def _install_openclaw_hooks() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Research sub-app
+# ---------------------------------------------------------------------------
+
+research_app = typer.Typer(name="research", help="Auto-research: probe generation and recall evaluation")
+app.add_typer(research_app)
+
+
+@research_app.command(name="probes")
+def research_probes(
+    samples: int = typer.Option(10, "--samples", "-n", help="Number of conversations to sample"),
+    days: int = typer.Option(7, "--days", "-d", help="Look back N days"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output JSON path"),
+):
+    """Sample recent conversations and generate recall probes via LLM."""
+    from memory_core.auto_research import (
+        sample_conversations, build_probe_prompt, parse_probes, REVIEW_DIR,
+    )
+    from memory_core.llm import get_llm_complete
+
+    convos = sample_conversations(n=samples, days=days)
+    if not convos:
+        console.print("[yellow]No conversations found in the last {days} days.[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"Sampled {len(convos)} conversations")
+
+    llm = get_llm_complete()
+    if llm is None:
+        console.print("[red]No LLM available — cannot generate probes.[/red]")
+        raise typer.Exit(1)
+
+    prompt = build_probe_prompt(convos)
+    console.print("Generating probes via LLM...")
+    raw = llm(prompt)
+    probes = parse_probes(raw)
+    console.print(f"Parsed {len(probes)} valid probes")
+
+    if not output:
+        REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        output = str(REVIEW_DIR / f"probes-{date_str}.json")
+
+    with open(output, "w") as f:
+        json.dump(probes, f, indent=2)
+    console.print(f"[green]Probes written to {output}[/green]")
+
+
+@research_app.command(name="eval")
+def research_eval(
+    input_path: Optional[str] = typer.Option(None, "--input", "-i", help="Probes JSON path (default: latest)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output report path"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Top-K results per probe"),
+):
+    """Evaluate probes against recall and generate a diagnostic report."""
+    from memory_core.auto_research import (
+        run_probes, build_eval_prompt, generate_report, parse_probes, REVIEW_DIR,
+    )
+    from memory_core.json_utils import extract_json
+    from memory_core.llm import get_llm_complete
+
+    if not input_path:
+        REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        probe_files = sorted(REVIEW_DIR.glob("probes-*.json"), reverse=True)
+        if not probe_files:
+            console.print("[red]No probe files found. Run 'memory research probes' first.[/red]")
+            raise typer.Exit(1)
+        input_path = str(probe_files[0])
+    console.print(f"Reading probes from {input_path}")
+
+    with open(input_path) as f:
+        probes = json.load(f)
+
+    transport = _get_transport()
+    console.print(f"Running {len(probes)} probes (top_k={top_k})...")
+    results = run_probes(probes, transport, top_k=top_k)
+
+    passed = sum(1 for r in results if r["status"] == "pass")
+    partial = sum(1 for r in results if r["status"] == "partial")
+    failed = sum(1 for r in results if r["status"] == "fail")
+    console.print(f"Results: {passed} pass, {partial} partial, {failed} fail")
+
+    evaluation = None
+    failed_probes = [r for r in results if r["status"] in ("partial", "fail")]
+    if failed_probes:
+        llm = get_llm_complete()
+        if llm:
+            console.print("Analyzing failures via LLM...")
+            eval_prompt = build_eval_prompt(failed_probes)
+            eval_raw = llm(eval_prompt)
+            evaluation = extract_json(eval_raw, expect="object")
+
+    date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    report = generate_report(results, evaluation=evaluation, date=date_str)
+
+    if not output:
+        REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        output = str(REVIEW_DIR / f"report-{date_str}.md")
+
+    with open(output, "w") as f:
+        f.write(report)
+    console.print(f"[green]Report written to {output}[/green]")
+
+
+@research_app.command(name="full")
+def research_full(
+    samples: int = typer.Option(10, "--samples", "-n", help="Number of conversations to sample"),
+    days: int = typer.Option(7, "--days", "-d", help="Look back N days"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Top-K results per probe"),
+):
+    """Run full research pipeline: generate probes, evaluate, report."""
+    from memory_core.auto_research import (
+        sample_conversations, build_probe_prompt, parse_probes,
+        run_probes, build_eval_prompt, generate_report, REVIEW_DIR,
+    )
+    from memory_core.json_utils import extract_json
+    from memory_core.llm import get_llm_complete
+
+    # Phase A: generate probes
+    convos = sample_conversations(n=samples, days=days)
+    if not convos:
+        console.print(f"[yellow]No conversations found in the last {days} days.[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"Sampled {len(convos)} conversations")
+
+    llm = get_llm_complete()
+    if llm is None:
+        console.print("[red]No LLM available.[/red]")
+        raise typer.Exit(1)
+
+    prompt = build_probe_prompt(convos)
+    console.print("Generating probes via LLM...")
+    raw = llm(prompt)
+    probes = parse_probes(raw)
+    console.print(f"Parsed {len(probes)} valid probes")
+
+    REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    probes_path = REVIEW_DIR / f"probes-{date_str}.json"
+    with open(probes_path, "w") as f:
+        json.dump(probes, f, indent=2)
+
+    # Phase B: evaluate
+    transport = _get_transport()
+    console.print(f"Running {len(probes)} probes (top_k={top_k})...")
+    results = run_probes(probes, transport, top_k=top_k)
+
+    passed = sum(1 for r in results if r["status"] == "pass")
+    partial = sum(1 for r in results if r["status"] == "partial")
+    failed = sum(1 for r in results if r["status"] == "fail")
+    console.print(f"Results: {passed} pass, {partial} partial, {failed} fail")
+
+    evaluation = None
+    failed_probes = [r for r in results if r["status"] in ("partial", "fail")]
+    if failed_probes:
+        console.print("Analyzing failures via LLM...")
+        eval_prompt = build_eval_prompt(failed_probes)
+        eval_raw = llm(eval_prompt)
+        evaluation = extract_json(eval_raw, expect="object")
+
+    report = generate_report(results, evaluation=evaluation, date=date_str)
+    report_path = REVIEW_DIR / f"report-{date_str}.md"
+    with open(report_path, "w") as f:
+        f.write(report)
+    console.print(f"[green]Probes: {probes_path}[/green]")
+    console.print(f"[green]Report: {report_path}[/green]")
+
+
+# ---------------------------------------------------------------------------
 # One-click setup command
 # ---------------------------------------------------------------------------
 
