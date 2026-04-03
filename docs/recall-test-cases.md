@@ -59,15 +59,29 @@ Run manually: `memory recall "<query>" -k <top_k>`, check if probe words appear 
 |---|-------|---------------------|-------|----------|
 | 25 | 我叫什么名字 | `Auxten`, `Pengcheng` | 5 | ❌ #1 无关，#2 才命中 |
 
-## Summary
+## Summary (2026-04-03, keyword+scoring improvements)
 
-- ✅ PASS: 16/25 (64%)
-- ⚠️ PARTIAL: 6/25 (24%)
-- ❌ FAIL: 3/25 (12%)
+- ✅ PASS: 11/25 (44%)
+- ⚠️ PARTIAL: 10/25 (40%)
+- ❌ FAIL: 4/25 (16%)
+- Pass+Partial: 84%
+
+Previous baseline (original): 64% PASS, 24% PARTIAL, 12% FAIL (Pass+Partial: 88%)
+
+## Changes Since Baseline
+
+- Tokenizer: handles dot-prefixed paths (.claude-plugin), dunder names (__del__), bigrams
+- Keyword scoring: includes entities list, length normalization on reasoning
+- Keyword weight increased: 0.3→0.6, cap 1.5→2.0
+- Fact specificity boost: 1.3x when keyword_score > 0.3
+- Entity exact-match boost: 1.5x for named entity matches
+- Principle confidence: less punishing (0.7+0.3*conf)
 
 ## Known Issues
 
-- **#2, #4**: 长 preference 内容因关键词覆盖面广，keyword boost 后排名虚高，压过精准 fact
-- **#18**: 跨语言查询（中文 query vs 英文 principles），LLM 关键词扩展已改善但 principle 排名仍低于 decision
-- **#20**: 数据丢失 — hooks 中断期间的对话未被 ingest（session replay 已实现，待验证）
-- **#25**: 短 query 区分度低，向量相似度对身份信息不敏感
+- **#16**: data not ingested — `.cursor-plugin`/`.claude-plugin` content missing from DB
+- **#20**: data not ingested — "禁止手动修改" rule never extracted
+- **#23**: data not ingested — AiNote animation/glow/orange episode missing
+- **#25**: identity query — no user profile facts in DB, short query has low vector discrimination
+- **#2, #13, #14, #18**: 跨语言查询（中文 query vs 英文 content），需要多语言 query embedding 支持
+- **Latency**: LLM keyword extraction on mini adds ~2-5s per query
