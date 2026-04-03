@@ -24,7 +24,7 @@ _log = logging.getLogger("clickmem.session_replay")
 # Claude Code stores sessions here
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
-_MAX_TURN_CHARS = 8000  # same as server's _CC_MAX_TURN_CHARS
+_MAX_TURN_CHARS = 8000  # must match server.py _CC_MAX_TURN_CHARS
 
 
 def _encode_project_path(cwd: str) -> str:

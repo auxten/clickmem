@@ -255,6 +255,36 @@ def refine(
 
 
 @app.command()
+def backfill(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only report, don't reset"),
+):
+    """Reset processed raw transcripts that produced no entities, allowing re-extraction.
+
+    Fixes data loss from a bug where raw transcripts were marked as processed
+    even when LLM extraction returned empty results.
+    """
+    from memory_core.db import MemoryDB
+    db = MemoryDB(_DB_PATH)
+
+    # Step 1: Reset orphan processed raws
+    if dry_run:
+        rows = db._query_json(
+            "SELECT count() as cnt FROM raw_transcripts "
+            "WHERE is_processed = 1 "
+            "AND id NOT IN (SELECT DISTINCT raw_id FROM episodes WHERE raw_id != '')"
+        )
+        count = int(rows[0]["cnt"]) if rows else 0
+        console.print(f"[yellow]Dry run:[/yellow] {count} processed raws with no entities would be reset")
+        return
+
+    reset_count = db.reset_orphan_processed_raws()
+    console.print(f"[green]Reset {reset_count} orphan processed raws to unprocessed[/green]")
+
+    if reset_count > 0:
+        console.print("Run [bold]memory refine[/bold] to re-extract them with the current LLM")
+
+
+@app.command()
 def recall(
     query: str = typer.Argument(..., help="Search query"),
     layer: Optional[str] = typer.Option(None, help="Filter by layer"),

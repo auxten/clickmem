@@ -64,8 +64,10 @@ class CEORefinement:
                 session_id=raw.get("session_id", ""),
                 raw_id=raw["id"],
             )
-            old_db.mark_raw_processed(raw["id"])
-            count += len(result.episode_ids) + len(result.decision_ids) + len(result.principle_ids)
+            entity_count = len(result.episode_ids) + len(result.decision_ids) + len(result.principle_ids)
+            if entity_count > 0:
+                old_db.mark_raw_processed(raw["id"])
+                count += entity_count
 
         return count
 

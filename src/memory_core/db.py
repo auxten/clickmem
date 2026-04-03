@@ -504,6 +504,30 @@ class MemoryDB:
             f"WHERE id = '{self._escape(raw_id)}'"
         )
 
+    def reset_orphan_processed_raws(self) -> int:
+        """Find processed raw_transcripts that produced no entities and reset them.
+
+        This fixes the bug where mark_raw_processed was called even on failed
+        extraction, permanently losing the data.  Resetting lets the refinement
+        loop retry.
+        """
+        # Find processed raws whose id does NOT appear as raw_id in episodes
+        rows = self._query_json(
+            "SELECT id FROM raw_transcripts "
+            "WHERE is_processed = 1 "
+            "AND id NOT IN (SELECT DISTINCT raw_id FROM episodes WHERE raw_id != '')"
+        )
+        if not rows:
+            return 0
+        for row in rows:
+            rid = self._escape(row["id"])
+            self._session.query(
+                f"ALTER TABLE raw_transcripts UPDATE "
+                f"is_processed = 0, processed_at = '' "
+                f"WHERE id = '{rid}'"
+            )
+        return len(rows)
+
     def count_raw(self) -> dict:
         rows = self._query_json(
             "SELECT "

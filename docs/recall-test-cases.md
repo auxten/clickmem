@@ -59,6 +59,16 @@ Run manually: `memory recall "<query>" -k <top_k>`, check if probe words appear 
 |---|-------|---------------------|-------|----------|
 | 25 | 我叫什么名字 | `Auxten`, `Pengcheng` | 5 | ❌ #1 无关，#2 才命中 |
 
+## Auto-Research Probes (2026-04-03)
+
+Cases auto-generated from real conversations by the auto-research system.
+
+| # | Query | Probe Words (top-5) | Top-K | Baseline |
+|---|-------|---------------------|-------|----------|
+| 26 | Why was the direct push to main branch rejected and what was the alternative? | `push protection`, `PR`, `main branch`, `feature branch` | 5 | ⚠️ found PR only |
+| 27 | What is the status of the P0 task 'fix test failure'? | `P0`, `fix test failure`, `resolved` | 5 | ⚠️ found P0 only |
+| 28 | How does the clickmem agent manage multiple tasks? | `TaskCreate`, `TaskList`, `TaskGet` | 5 | ❌ data_gap |
+
 ## Summary (2026-04-03, keyword+scoring improvements)
 
 - ✅ PASS: 11/25 (44%)

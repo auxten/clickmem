@@ -255,17 +255,15 @@ class LocalTransport:
             session_id=session_id, agent_source=source, raw_id=raw_id,
         )
 
-        # If extraction produced nothing, keep raw transcript unprocessed
-        # for later re-extraction. Do NOT store raw text as an episode.
+        # Only mark processed when extraction actually produced entities.
+        # Empty extraction → keep unprocessed so the refinement loop retries later.
         has_entities = (result.episode_ids or result.decision_ids
                         or result.principle_ids or result.fact_ids)
-        if not has_entities:
-            _log.info("CEO extraction returned empty for %d chars; raw transcript %s kept for re-extraction",
+        if has_entities:
+            db.mark_raw_processed(raw_id)
+        else:
+            _log.info("CEO extraction returned empty for %d chars; raw transcript %s kept unprocessed for re-extraction",
                        len(filtered), raw_id[:8])
-            db.mark_raw_processed(raw_id)  # still mark processed to avoid infinite retry
-            # but do not insert a raw-text episode
-
-        db.mark_raw_processed(raw_id)
 
         ingest_result = {
             "raw_id": raw_id,

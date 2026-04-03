@@ -310,7 +310,7 @@ async def sql(req: SqlRequest):
 
 _cc_prompt_buffers: dict[str, str] = {}
 
-_CC_MAX_TURN_CHARS = 4000
+_CC_MAX_TURN_CHARS = 8000
 _CC_RECALL_TOP_K = 5
 _CC_RECALL_MIN_SCORE = 0.25
 
