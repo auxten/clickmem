@@ -78,19 +78,48 @@ def _tokenize_query(query: str, llm_complete=None) -> list[str]:
     return _tokenize_query_regex(query)
 
 
+_CAMEL_SPLIT_RE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+
+
+def _split_compound(term: str) -> list[str]:
+    """Split a compound term into sub-parts for fuzzy matching.
+
+    'targetingkeywords/bulk' → ['targetingkeywords', 'bulk', 'targeting', 'keywords']
+    'camelCaseWord' → ['camelcaseword', 'camel', 'case', 'word']
+    """
+    parts = re.split(r'[/_\-.]', term)
+    result = [p.lower() for p in parts if len(p) >= 2]
+    # Also split camelCase
+    for p in list(result):
+        camel_parts = _CAMEL_SPLIT_RE.split(p)
+        if len(camel_parts) > 1:
+            result.extend(cp.lower() for cp in camel_parts if len(cp) >= 2)
+    return result
+
+
 def _keyword_score(content: str, keywords: list[str],
                     entities: list[str] | None = None) -> float:
     """Fraction of query keywords found in content + entities (case-insensitive).
 
-    Also checks the entities list (IPs, paths, usernames) for exact matches,
-    which is critical for infrastructure lookups.
+    For compound terms (containing / _ - or camelCase), also checks sub-parts.
+    A keyword counts as a hit if either the full term or ALL its sub-parts match.
     """
     if not keywords:
         return 0.0
     searchable = content.lower()
     if entities:
         searchable += " " + " ".join(entities).lower()
-    hits = sum(1 for kw in keywords if kw.lower() in searchable)
+
+    hits = 0
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower in searchable:
+            hits += 1
+            continue
+        # Try sub-parts for compound terms
+        sub_parts = _split_compound(kw)
+        if sub_parts and all(sp in searchable for sp in sub_parts):
+            hits += 1
     return hits / len(keywords)
 
 

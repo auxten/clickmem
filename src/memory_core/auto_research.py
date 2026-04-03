@@ -27,6 +27,8 @@ _MASK_PATTERNS = [
     (re.compile(r"\b(?:sk-|pk_|Bearer\s+)[a-zA-Z0-9_-]{20,}\b"), "[REDACTED_KEY]"),
     # Hostnames ending in .local
     (re.compile(r"\b[a-zA-Z0-9-]+\.local\b"), "[HOST].local"),
+    # Long numeric IDs (campaign IDs, account IDs, etc.) — 8+ digits
+    (re.compile(r"\b\d{8,}\b"), "[NUMERIC_ID]"),
 ]
 
 
@@ -183,14 +185,18 @@ def run_probes(probes: list[dict], transport, top_k: int = 5) -> list[dict]:
 
 def build_eval_prompt(failed_probes: list[dict]) -> str:
     instruction = (
-        "Analyze these failed/partial recall probes and attribute each failure to systemic categories:\n"
+        "Analyze these failed/partial recall probes. Attribute each failure to a systemic category:\n"
         "- embedding: semantic gap between query and stored content\n"
-        "- keyword: literal match failure in keyword search\n"
+        "- keyword: literal match failure (compound terms, naming conventions)\n"
         "- entity_ranking: correct data exists but ranked too low\n"
         "- data_gap: information was never stored\n"
         "- scope: wrong project context surfaced\n\n"
+        "For parameter_suggestions, be SPECIFIC: name the exact function, variable, or algorithm to change, "
+        "with concrete values (e.g., 'increase _KW_BONUS_WEIGHT from 0.6 to 0.8' not 'adjust keyword weight'). "
+        "Reference the codebase file ceo_retrieval.py where scoring happens.\n\n"
         "Output JSON: {\"failure_analysis\": [{\"query\": ..., \"category\": ..., \"explanation\": ...}], "
-        "\"systemic_issues\": [\"...\"], \"parameter_suggestions\": [\"...\"]}"
+        "\"systemic_issues\": [\"...\"], \"parameter_suggestions\": [{\"parameter\": \"...\", \"file\": \"...\", "
+        "\"current\": \"...\", \"suggested\": \"...\", \"rationale\": \"...\"}]}"
     )
     parts = [instruction, ""]
     for p in failed_probes:
