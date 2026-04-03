@@ -55,7 +55,24 @@ With the report, analyze:
 - Is the data gap shrinking compared to previous reports?
 - Any health issues (unprocessed backlog, server down)?
 
-## Step 6: Submit GitHub Issue
+## Step 6: Privacy Masking
+
+**CRITICAL**: Before submitting anything to GitHub, mask ALL private information. This issue will be public.
+
+Replace the following patterns in ALL output text:
+- **IP addresses**: `100.86.126.80` → `[INTERNAL_IP]`, `192.168.x.x` → `[LAN_IP]`
+- **Hostnames**: actual machine names → `[HOST_A]`, `[HOST_B]`
+- **Usernames**: system usernames in paths → `[USER]` (e.g. `/Users/auxten/` → `/Users/[USER]/`)
+- **File paths**: full home paths → relative or masked (e.g. `~/.claude/projects/...`)
+- **API keys/tokens**: any string that looks like a key → `[REDACTED]`
+- **SSH credentials**: `user@host` → `[USER]@[HOST]`
+- **Git remotes with auth tokens**: mask the token portion
+- **Internal project names**: if not open-source, generalize (e.g. "internal iOS app" instead of exact name)
+- **Conversation content**: never include raw conversation text — only describe the pattern (e.g. "a conversation about deployment configuration" not the actual text)
+
+**Test**: Before creating the issue, review the full body text and confirm no PII remains.
+
+## Step 7: Submit GitHub Issue
 
 Detect the repo from git remote, falling back to `auxten/clickmem`:
 ```bash
@@ -70,11 +87,11 @@ gh issue create --repo "$REPO" --title "Auto-Research Report: YYYY-MM-DD" --body
 Issue body format:
 - **Summary**: pass/partial/fail counts, pass rate vs target
 - **Health**: unprocessed count, data volume, server status
-- **Failed Probes**: list with failure categories
-- **Systemic Issues**: patterns in failures
+- **Failed Probes**: list with failure categories (use MASKED queries — describe the pattern, not literal content)
+- **Systemic Issues**: patterns in failures (mechanism-level, no private details)
 - **Suggestions**: parameter/mechanism improvements
 - **Comparison**: delta from previous report if available
 
-## Step 7: Record Quality Probes
+## Step 8: Record Quality Probes
 
-Any new probes revealing interesting patterns should be appended to `docs/recall-test-cases.md` for regression tracking.
+Any new probes revealing interesting patterns should be appended to `docs/recall-test-cases.md` for regression tracking. These probes stay local (not submitted to GitHub) and CAN contain specific details since they're in the repo owner's control.

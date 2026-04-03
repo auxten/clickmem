@@ -11,6 +11,7 @@ from memory_core.auto_research import (
     build_eval_prompt,
     build_probe_prompt,
     generate_report,
+    mask_pii,
     parse_probes,
     run_probes,
 )
@@ -247,3 +248,35 @@ class TestBuildEvalPrompt:
         assert "Where is config?" in prompt
         assert "config.yaml" in prompt
         assert "embedding" in prompt  # category mentioned in instruction
+
+
+# ---------------------------------------------------------------------------
+# Privacy masking
+# ---------------------------------------------------------------------------
+
+class TestMaskPii:
+    def test_masks_internal_ips(self):
+        assert "[INTERNAL_IP]" in mask_pii("server at 100.86.126.80 port 9527")
+        assert "[INTERNAL_IP]" in mask_pii("LAN: 192.168.3.240")
+        assert "[INTERNAL_IP]" in mask_pii("VPN: 10.0.0.5")
+        assert "100.86" not in mask_pii("IP is 100.86.126.80")
+
+    def test_masks_home_paths(self):
+        assert "/Users/[USER]" in mask_pii("/Users/auxten/Codes/clickmem")
+        assert "auxten" not in mask_pii("/Users/auxten/.claude/projects")
+
+    def test_masks_ssh(self):
+        result = mask_pii("ssh tong@mini.local")
+        assert "tong" not in result
+        assert "[USER]@[HOST]" in result or "ssh [USER]@[HOST]" in result
+
+    def test_masks_api_keys(self):
+        assert "[REDACTED_KEY]" in mask_pii("Bearer sk-abc123def456ghi789jkl012mno345")
+
+    def test_preserves_normal_text(self):
+        text = "The recall pass rate was 20% with 5 probes"
+        assert mask_pii(text) == text
+
+    def test_masks_dotlocal_hostnames(self):
+        assert "[HOST].local" in mask_pii("connecting to mini.local")
+        assert "mini" not in mask_pii("server mini.local is down")

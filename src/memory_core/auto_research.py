@@ -2,13 +2,39 @@
 
 from __future__ import annotations
 
-import json, logging, os, random, time
+import json, logging, os, random, re, time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger("clickmem.research")
 REVIEW_DIR = Path(os.path.expanduser("~/.clickmem/reviews"))
+
+
+# ---------------------------------------------------------------------------
+# Privacy masking — strip PII before public submission
+# ---------------------------------------------------------------------------
+
+_MASK_PATTERNS = [
+    # IP addresses (private ranges + Tailscale 100.x)
+    (re.compile(r"\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}|192\.168\.\d{1,3}|100\.\d{1,3}\.\d{1,3})\.\d{1,3}\b"), "[INTERNAL_IP]"),
+    # Home directory paths
+    (re.compile(r"/(?:Users|home)/[a-zA-Z0-9._-]+"), "/Users/[USER]"),
+    # SSH user@host patterns
+    (re.compile(r"\b[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.local\b"), "[USER]@[HOST]"),
+    (re.compile(r"\bssh\s+[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+"), "ssh [USER]@[HOST]"),
+    # API keys / tokens (common patterns)
+    (re.compile(r"\b(?:sk-|pk_|Bearer\s+)[a-zA-Z0-9_-]{20,}\b"), "[REDACTED_KEY]"),
+    # Hostnames ending in .local
+    (re.compile(r"\b[a-zA-Z0-9-]+\.local\b"), "[HOST].local"),
+]
+
+
+def mask_pii(text: str) -> str:
+    """Replace private information in text with safe placeholders."""
+    for pattern, replacement in _MASK_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 # ---------------------------------------------------------------------------
