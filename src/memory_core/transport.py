@@ -301,10 +301,16 @@ class LocalTransport:
             if llm is None:
                 return
             # Phase 1: drain unprocessed backlog (extraction only, no heavy refinement)
-            while True:
+            # Cap iterations to prevent infinite loop when LLM consistently fails
+            prev_remaining = None
+            for _ in range(100):
                 remaining = db.count_raw().get("unprocessed", 0)
                 if remaining == 0:
                     break
+                if remaining == prev_remaining:
+                    _log.info("Refinement: stuck at %d unprocessed (LLM extraction failing), stopping", remaining)
+                    break
+                prev_remaining = remaining
                 _log.info("Refinement: extracting %d unprocessed raw transcripts...", remaining)
                 ContinualRefinement._dedup_exact_text(db)
                 extracted = ContinualRefinement._reextract_unprocessed(db, emb, llm)

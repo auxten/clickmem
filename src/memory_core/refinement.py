@@ -148,9 +148,10 @@ class ContinualRefinement:
                     raw_id=raw_id,
                 )
                 count += len(ids)
+                if ids:
+                    db.mark_raw_processed(raw_id)
             except Exception as exc:
                 _log.warning("Re-extract failed for raw %s: %s", raw_id[:8], exc)
-            db.mark_raw_processed(raw_id)
         return count
 
     @staticmethod
