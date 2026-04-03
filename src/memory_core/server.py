@@ -603,20 +603,82 @@ def _build_combined_app():
     return combined
 
 
+def _kill_existing_server(port: int, timeout: float = 8.0) -> None:
+    """Ensure no other server is occupying the port before we start.
+
+    First tries graceful shutdown via health endpoint, then SIGTERM, then SIGKILL.
+    This prevents the launchd restart-storm where multiple processes fight
+    for the same port and chDB database lock.
+    """
+    import signal
+    import socket
+    import time
+
+    def _port_in_use() -> int | None:
+        """Return PID using the port, or None."""
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["lsof", "-ti", f"tcp:{port}"], text=True, timeout=3,
+            ).strip()
+            if out:
+                # May return multiple PIDs, take the first
+                return int(out.split("\n")[0])
+        except Exception:
+            pass
+        return None
+
+    pid = _port_in_use()
+    if pid is None:
+        return
+
+    my_pid = os.getpid()
+    if pid == my_pid:
+        return
+
+    _log.info("Port %d occupied by PID %d — stopping it before startup", port, pid)
+
+    # 1. Try graceful: ask the existing server to shut down via SIGTERM
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return  # process already gone
+
+    # 2. Wait for port to free up
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        if _port_in_use() is None:
+            _log.info("Previous server (PID %d) stopped gracefully", pid)
+            return
+
+    # 3. Force kill if still alive
+    try:
+        os.kill(pid, signal.SIGKILL)
+        _log.warning("Force-killed previous server PID %d (didn't stop in %.0fs)", pid, timeout)
+        time.sleep(1)
+    except OSError:
+        pass
+
+
 def run_server(host: str | None = None, port: int | None = None, debug: bool = False,
                register_mdns: bool = True, mcp: bool = True):
-    if host is None:
-        host = os.environ.get("CLICKMEM_SERVER_HOST", "127.0.0.1")
-    if port is None:
-        port = int(os.environ.get("CLICKMEM_SERVER_PORT", "9527"))
     """Start the ClickMem server (blocking).
 
     When *mcp* is True (default), MCP SSE is served on the same port at
     ``/sse`` and ``/messages/``, so a single process handles both
     the REST API and MCP clients.
     """
+    if host is None:
+        host = os.environ.get("CLICKMEM_SERVER_HOST", "127.0.0.1")
+    if port is None:
+        port = int(os.environ.get("CLICKMEM_SERVER_PORT", "9527"))
+
     import uvicorn
     set_debug_mode(debug)
+
+    # Kill any existing server on this port to prevent restart-storm
+    _kill_existing_server(port)
 
     asgi_app = _build_combined_app() if mcp else app
 

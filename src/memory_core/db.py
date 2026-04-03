@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from typing import Optional
 from chdb import session as chdb_session
 
 from memory_core.models import Memory
+
+_logger = logging.getLogger("clickmem.db")
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -58,6 +61,9 @@ def _get_session(db_path: str) -> chdb_session.Session:
     chDB's EmbeddedServer can only be initialized once with a persistent path.
     For `:memory:` or None path, we create a fresh session each time.
     For persistent paths, we reuse the same session.
+
+    Retries on "Cannot lock file" errors — the previous server may still be
+    shutting down (common during deploys with launchd KeepAlive).
     """
     global _persistent_session, _persistent_path
 
@@ -70,9 +76,28 @@ def _get_session(db_path: str) -> chdb_session.Session:
                 return _persistent_session
             return chdb_session.Session()
 
-        _persistent_session = chdb_session.Session(db_path)
-        _persistent_path = db_path
-        return _persistent_session
+        import time
+        last_err = None
+        for attempt in range(6):  # up to ~15s total wait
+            try:
+                _persistent_session = chdb_session.Session(db_path)
+                _persistent_path = db_path
+                if attempt > 0:
+                    _logger.info("chDB session acquired after %d retries", attempt)
+                return _persistent_session
+            except RuntimeError as e:
+                err_msg = str(e)
+                if "Cannot lock file" in err_msg or "Another server instance" in err_msg:
+                    last_err = e
+                    wait = min(1.0 * (attempt + 1), 5.0)
+                    _logger.warning(
+                        "chDB lock conflict (attempt %d/6), retrying in %.0fs: %s",
+                        attempt + 1, wait, err_msg[:100],
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+        raise last_err  # type: ignore[misc]
 
 
 class MemoryDB:
