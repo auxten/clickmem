@@ -2,48 +2,145 @@
 
 ![ClickMem — CEO Brain for AI Coding Agents](assets/clickmem-banner.png)
 
-**CEO Brain for AI coding agents — local-first, persistent, LAN-shareable.**
+**Local-first persistent memory for AI coding agents. Works with Claude Code, Cursor, and OpenClaw.**
 
-AI coding assistants forget everything between sessions. ClickMem extracts structured knowledge from your conversations — decisions with reasoning, reusable principles, project context — and injects it back when you start a new session. Your agents inherit your thinking patterns, not just raw facts.
+AI coding agents forget everything between sessions. ClickMem captures the knowledge you build with them — decisions with reasoning, reusable principles, project context — and brings it back when you start a new session. Your agents inherit your thinking patterns, not just raw facts.
+
+## Why ClickMem
+
+- **One brain, all your agents.** Claude Code, Cursor, and OpenClaw share a single knowledge base. Switch tools without losing context.
+- **CEO-level extraction.** Not a transcript dump — ClickMem extracts *decisions*, *principles*, and *episodes* from your conversations via a local LLM.
+- **Native integrations.** Hooks into Claude Code Dream (auto-memory), Cursor's agents-memory-updater, and MCP for real-time sync.
+- **Runs locally.** Everything stays on your machine. Embedding model (Qwen3-Embedding), LLM (Qwen3.5), and database (chDB) — all local, all private.
+- **LAN-shareable.** Run the server on one machine, access from any device on your network.
 
 ## Quick Start
 
 ```bash
 pip install clickmem
-memory service install        # start background server
-memory hooks install          # install hooks for Claude Code, Cursor, OpenClaw
+memory service install        # start background server (port 9527)
+memory hooks install          # install hooks for Claude Code & Cursor
 memory import                 # import existing conversation history
 ```
 
-After this, every Claude Code and Cursor session automatically recalls relevant context on start and captures knowledge on completion.
+That's it. Every session now auto-recalls relevant context on start and captures knowledge on completion.
+
+## Agent Integrations
+
+### Claude Code — Dream & Hooks
+
+ClickMem deeply integrates with Claude Code through two mechanisms:
+
+**1. Dream (Auto-Memory) Sync**
+
+Claude Code's [Dream](https://docs.anthropic.com/en/docs/claude-code/memory) system writes structured memory files to `~/.claude/projects/*/memory/*.md` — user preferences, project facts, feedback. ClickMem monitors these files and syncs them into the CEO Brain in real-time:
+
+- **PostToolUse hook**: When Claude Code writes or edits an auto-memory `.md` file, ClickMem immediately parses the YAML frontmatter and ingests it — `feedback` type becomes a Principle, `project`/`reference` becomes a Fact.
+- **Stop hook**: At the end of each turn, ClickMem scans the entire auto-memory directory for any changed files (mtime-based) and syncs them all.
+- **Direct parse — no LLM needed.** Auto-memory files have structured frontmatter, so ClickMem parses them deterministically. This means Dream memories are available in ClickMem within seconds.
+
+```
+~/.claude/projects/{encoded_cwd}/memory/
+├── MEMORY.md              ← index (skipped)
+├── feedback_testing.md    ← synced as Principle
+├── user_role.md           ← synced as Principle (global)
+└── project_deploy.md      ← synced as Fact
+```
+
+**2. Session Lifecycle Hooks**
+
+Five HTTP hooks capture the full conversation lifecycle:
+
+| Event | What ClickMem does |
+|-------|-------------------|
+| **SessionStart** | Injects CEO context (~1700 tokens): active principles, recent decisions, project info |
+| **UserPromptSubmit** | Buffers the user's prompt for per-turn extraction |
+| **Stop** | Extracts decisions/principles/episodes from the turn via local LLM; syncs Dream files |
+| **PostToolUse** | Fast-path sync when Claude Code writes to auto-memory files |
+| **SessionEnd** | Runs maintenance (dedup, episode cleanup) |
+
+**3. AGENTS.md & CLAUDE.md Import**
+
+ClickMem parses `AGENTS.md` files directly (no LLM) — "Learned User Preferences" become global Principles, "Learned Workspace Facts" become project-scoped Principles. `CLAUDE.md` files are extracted via LLM during `memory import`.
+
+### Cursor — Stop Hook & Rules Sync
+
+ClickMem integrates with Cursor via a TypeScript stop hook and rule file import:
+
+**1. Conversation Capture (Stop Hook)**
+
+The stop hook (`cursor-hooks/hooks/clickmem-stop.ts`) fires when a Cursor conversation ends:
+- Parses the JSONL transcript from Cursor's `agent-transcripts/` directory
+- Extracts user/assistant messages (handles `<user_query>` tags)
+- Fires a **background** ingest request to ClickMem — never blocks Cursor
+- Dedup via `generation_id` + transcript mtime tracking
+
+**2. Rules & .mdc Sync**
+
+During `memory import`, ClickMem discovers and imports:
+- Project rules: `.cursor/rules/*.md` and `.cursor/rules/*.mdc`
+- Global rules: `~/.cursor/rules/*.md` and `~/.cursor/rules/*.mdc`
+- Agent transcripts: `~/.cursor/projects/*/agent-transcripts/`
+
+**3. MCP Integration**
+
+Add ClickMem as an MCP server in your project:
+
+```json
+// .cursor/mcp.json
+{"mcpServers": {"clickmem": {"command": "clickmem-mcp"}}}
+```
+
+This gives Cursor access to CEO tools: `ceo_brief`, `ceo_decide`, `ceo_remember`, `ceo_review`, `ceo_retro`, `ceo_portfolio`.
+
+### OpenClaw
+
+OpenClaw connects via a plugin (`clickmem-plugin/index.js`) that provides:
+- `clickmem_search` / `clickmem_store` / `clickmem_forget` tools
+- `before_agent_start` hook: auto-recall relevant context
+- `agent_end` hook: auto-capture knowledge from the turn
+
+### MCP Tools
+
+All agents can access CEO Brain capabilities via MCP:
+
+| Tool | What it does |
+|------|-------------|
+| `ceo_brief` | Project briefing: principles, decisions, recent activity, semantic search |
+| `ceo_decide` | Decision support: surfaces related decisions and relevant principles |
+| `ceo_remember` | Store a decision, principle, or episode |
+| `ceo_review` | Validate a plan against existing principles and past decisions |
+| `ceo_retro` | Retrospective: review outcomes, suggest new principles |
+| `ceo_portfolio` | Cross-project overview |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     subgraph agents [AI Agents]
-        CC[Claude Code]
-        CR[Cursor]
+        CC["Claude Code\n(Dream + Hooks)"]
+        CR["Cursor\n(Stop Hook + MCP)"]
         OC[OpenClaw]
         CLI[CLI / API]
     end
 
-    subgraph server [ClickMem Server — port 9527]
+    subgraph server ["ClickMem Server — port 9527"]
         REST["/v1/* REST API"]
         MCP["/sse MCP SSE"]
         Hooks["/hooks/claude-code"]
     end
 
-    subgraph brain [CEO Brain — chDB]
-        Projects["projects\n(name, vision, repo, status)"]
-        Decisions["decisions\n(title, choice, reasoning, alternatives)"]
-        Principles["principles\n(content, confidence, evidence_count)"]
-        Episodes["episodes\n(content, user_intent, key_outcomes, TTL 180d)"]
-        Raw["raw_transcripts\n(append-only, source of truth)"]
+    subgraph brain ["CEO Brain — chDB"]
+        Projects["Projects\n(vision, repo, status, stack)"]
+        Decisions["Decisions\n(choice, reasoning, outcome)"]
+        Principles["Principles\n(content, confidence, evidence)"]
+        Episodes["Episodes\n(summary, intent, TTL 180d)"]
+        Facts["Facts\n(infra, config, contacts)"]
     end
 
     CC -->|HTTP hooks| Hooks
-    CR -->|Plugin hooks| REST
+    CC -->|Dream sync| Hooks
+    CR -->|Stop hook| REST
     OC -->|Plugin| REST
     CLI --> REST
 
@@ -53,49 +150,33 @@ flowchart TD
     Hooks --> brain
 ```
 
-**One server, all your tools.** A single process serves REST API + MCP SSE on port 9527. Every agent on the LAN shares the same knowledge base.
+**One server, all your tools.** A single process on port 9527 serves REST API + MCP SSE. Every agent on the LAN shares the same knowledge base.
 
-## How It Works
-
-### Knowledge Extraction
+## Knowledge Extraction
 
 When a conversation ends, ClickMem runs CEO-perspective extraction via a local LLM:
 
 | Entity | What it captures | Lifecycle |
 |--------|-----------------|-----------|
-| **Decision** | Choice + reasoning + alternatives + context | Permanent; outcome tracked |
+| **Decision** | Choice + reasoning + alternatives + context | Permanent; outcome tracked (validated/invalidated) |
 | **Principle** | Reusable rule or preference | Permanent; evidence accumulates via dedup |
-| **Episode** | What happened + user intent + key outcomes | TTL 180 days; time-decayed |
-| **Project** | Name, repo URL, status, vision, tech stack | Auto-created from cwd |
+| **Episode** | What happened + user intent + key outcomes | TTL 180 days; time-decayed in recall |
+| **Fact** | Infrastructure details, configs, contacts | Permanent; never auto-deleted |
+| **Project** | Name, repo, status, vision, tech stack | Auto-created from cwd |
 
-For long conversations (50+ turns), the extractor segments the text into chunks and processes each one. Built-in dedup prevents duplicate principles across segments and sessions — instead, the evidence count increases.
+For long conversations, the extractor segments text into chunks and processes each one. Built-in dedup prevents duplicates — instead, evidence counts increase for matching principles.
 
-### Context Injection
+## Search & Recall
 
-On `SessionStart`, ClickMem assembles a structured CEO context (~1700 tokens) and injects it:
+`memory recall` performs hybrid search across all entity types:
 
-```
-## Principles
-- [95%] User correction > AI inference: never overwrite user-modified data
-- [90%] Edit source files, not compiled output
+- **Vector similarity**: 256-dim Qwen3-Embedding with cosine distance
+- **Keyword matching**: LLM-extracted keywords + entities (IPs, paths, usernames)
+- **Type-specific scoring**: validated decisions boosted; facts get specificity bonus; principles weighted by confidence
+- **Project-aware ranking**: same-project results boosted 1.3x, other-project penalized 0.6x
+- **MMR diversity**: prevents one entity type from dominating results
 
-## Recent Decisions
-- Tag Normalization Strategy: Two-phase extraction with global registry
-- Speaker Protection: isUserRenamed flag to protect corrections
-
-## Recent Activity
-- Implemented Welcome Sheet onboarding flow for AiNote
-```
-
-### Search & Recall
-
-`memory recall` searches both legacy memories and CEO Brain entities via hybrid search:
-- Vector similarity (256-dim Qwen3 embeddings)
-- Keyword matching on content, tags, entities
-- Type-specific scoring (validated decisions boosted, principles weighted by confidence)
-- MMR diversity re-ranking
-
-### Local LLM
+## Local LLM
 
 ClickMem auto-selects a local LLM based on available hardware:
 
@@ -107,107 +188,31 @@ ClickMem auto-selects a local LLM based on available hardware:
 | NVIDIA GPU | Qwen3.5 (transformers) | varies |
 | CPU-only | Remote API fallback | depends on provider |
 
-Override with `CLICKMEM_LOCAL_MODEL`. Thinking mode is disabled (`enable_thinking=False`) for structured JSON output.
+Override with `CLICKMEM_LOCAL_MODEL`.
 
 ## CLI Reference
 
 ```bash
-# Global
-memory help [subcmd]              # Help for any command
-memory status                     # Memory stats + CEO entities + import progress
-memory discover                   # Detect installed agents and session counts
-
-# Import & Hooks
-memory import [--agent all] [--path /dir] [--remote URL] [--foreground]
+# Setup
+memory service install|start|stop|status|logs
 memory hooks install [--agent all]
 memory hooks status
+memory import [--agent all] [--path /dir] [--remote URL]
+memory discover                    # detect installed agents + session counts
 
-# Memory Operations
-memory recall "query"             # Hybrid search (legacy + CEO)
+# Search & Store
+memory recall "query"              # hybrid search
 memory remember "fact" --category preference
-memory ingest "conversation..." --source cursor
 memory forget "memory ID or query"
-memory review --layer semantic
-memory maintain                   # Cleanup + CEO dedup + episode expiry
 
 # CEO Brain
-memory portfolio                  # All projects overview
-memory brief [--project-id X]    # Detailed project briefing
-memory projects                   # List projects
-memory decisions                  # List decisions
-memory principles                 # List principles
+memory portfolio                   # cross-project overview
+memory brief [--project-id X]     # detailed project briefing
+memory projects | decisions | principles
 
-# Service
-memory serve [--host 0.0.0.0]    # Start server (REST + MCP SSE)
-memory mcp                        # MCP stdio (for Claude Code / Cursor)
-memory service install|start|stop|status|logs
-```
-
-## Import Workflow
-
-`memory import` discovers conversation history from all installed agents and ingests it into ClickMem:
-
-```bash
-memory discover                    # See what's available
-# Agent       Sessions  Docs  Hook
-# claude-code      140     0  installed
-# cursor             2     0  not installed
-# openclaw          26     0  installed
-
-memory import --agent all          # Import all (runs in background)
-memory status                      # Check progress
-```
-
-**What gets imported:**
-- **Transcripts**: Claude Code JSONL (`~/.claude/projects/`), Cursor agent-transcripts (`~/.cursor/projects/`)
-- **Knowledge docs**: CLAUDE.md, AGENTS.md from each project directory
-- **Metadata preserved**: project name, git remote URL, hostname, branch, timestamps
-
-Import is incremental — re-running skips already-imported sessions (tracked in `~/.clickmem/import-state.json`). Sessions are processed newest-first.
-
-Import a specific project directory:
-```bash
-memory import --path ~/Projects/my-app    # Scans for CLAUDE.md, AGENTS.md
-```
-
-## Agent Integration
-
-```bash
-memory hooks install              # install hooks for Claude Code, Cursor, OpenClaw
-memory hooks status               # check which hooks are installed
-```
-
-### Claude Code MCP
-
-```bash
-# Add to ~/.claude.json
-cat ~/.claude.json | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-d.setdefault('mcpServers',{})['clickmem']={'command':'clickmem-mcp'}
-json.dump(d,sys.stdout,indent=2)" > /tmp/claude.json && mv /tmp/claude.json ~/.claude.json
-```
-
-### Cursor MCP
-
-```bash
-# Add to .cursor/mcp.json in project root
-mkdir -p .cursor && echo '{"mcpServers":{"clickmem":{"command":"clickmem-mcp"}}}' > .cursor/mcp.json
-```
-
-### Remote / LAN
-
-```bash
 # Server
-memory serve --host 0.0.0.0
-
-# Client
-export CLICKMEM_REMOTE=http://mini.local:9527
-memory recall "query"
-memory import --remote http://mini.local:9527
-
-# Client MCP (Claude Code / Cursor)
-# Set mcpServers.clickmem to:
-#   {"url": "http://mini.local:9527/sse"}
+memory serve [--host 0.0.0.0]     # REST + MCP SSE on port 9527
+memory mcp                         # MCP stdio for Claude Code / Cursor
 ```
 
 ## Configuration
@@ -216,36 +221,39 @@ memory import --remote http://mini.local:9527
 |----------|---------|-------------|
 | `CLICKMEM_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `CLICKMEM_SERVER_PORT` | `9527` | Server port |
-| `CLICKMEM_REMOTE` | — | Remote server URL (makes CLI/MCP act as client) |
+| `CLICKMEM_REMOTE` | — | Remote server URL (makes CLI/MCP a client) |
 | `CLICKMEM_API_KEY` | — | Bearer token for auth |
 | `CLICKMEM_DB_PATH` | `~/.openclaw/memory/chdb-data` | chDB data directory |
 | `CLICKMEM_LLM_MODE` | `auto` | `auto` / `local` / `remote` |
 | `CLICKMEM_LOCAL_MODEL` | auto-selected | Override local LLM model |
-| `CLICKMEM_LLM_MODEL` | — | Remote LLM model name |
-| `CLICKMEM_REFINE_THRESHOLD` | `1` | Trigger refinement after N unprocessed raws |
-| `CLICKMEM_LOG_LEVEL` | `WARNING` | Log verbosity |
+| `CLICKMEM_LLM_MODEL` | — | Remote LLM model (for litellm) |
+
+## Remote / LAN Setup
+
+```bash
+# Server machine (e.g., Mac Mini)
+git clone https://github.com/auxten/clickmem && cd clickmem && ./setup.sh
+# setup.sh: Python + uv + service install + hooks + first import
+
+# Client machines
+export CLICKMEM_REMOTE=http://mini.local:9527
+memory recall "query"              # queries remote server
+
+# Client MCP (Claude Code / Cursor)
+# In ~/.claude.json or .cursor/mcp.json:
+{"mcpServers": {"clickmem": {"url": "http://mini.local:9527/sse"}}}
+```
 
 ## Development
 
 ```bash
-make test          # Full test suite
-make test-fast     # Skip semantic tests
+make test          # full test suite
+make test-fast     # skip slow semantic tests
 make deploy        # rsync to remote + setup
 ```
 
 **Requirements:** Python >= 3.10, macOS or Linux (chDB), ~1 GB disk for models + data.
 
-## Deploy (Mac Mini)
+## License
 
-```bash
-# On Mac Mini
-git clone https://github.com/auxten/clickmem && cd clickmem && ./setup.sh
-
-# setup.sh handles:
-# 1. Python + uv setup
-# 2. Service install (launchd with auto-restart)
-# 3. Hook installation for all detected agents
-# 4. First-time conversation history import
-```
-
-The server runs as a launchd service with KeepAlive, auto-restarting on crash. Access from other machines via Tailscale or LAN.
+MIT
