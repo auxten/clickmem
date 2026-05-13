@@ -1,8 +1,0 @@
-{
-  "name": "@openclaw/clickmem",
-  "version": "0.1.0",
-  "type": "module",
-  "description": "Local semantic memory for OpenClaw — powered by chDB + Qwen3 embeddings",
-  "peerDependencies": { "openclaw": ">=2026.1.29" },
-  "openclaw": { "extensions": ["./index.js"] }
-}

@@ -1,8 +1,0 @@
-{
-  "name": "clickmem",
-  "version": "1.0.0",
-  "description": "Automatic long-term memory for AI coding sessions. Captures conversation transcripts and ingests them into ClickMem for cross-session recall.",
-  "author": {
-    "name": "auxten"
-  }
-}
