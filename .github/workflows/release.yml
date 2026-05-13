@@ -1,4 +1,4 @@
-name: Release to PyPI
+name: release
 
 on:
   push:
@@ -6,29 +6,33 @@ on:
 
 jobs:
   publish:
+    name: build + publish to PyPI
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
       - name: Set up Python
-        run: uv python install 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
 
-      - name: Run tests before release
-        run: uv run --extra dev pytest tests/ -m "not semantic" -v
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatchling
 
-      - name: Set version from tag
+      - name: Set package version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          echo "Releasing version ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
 
-      - name: Build package
-        run: uv build
+      - name: Build wheel + sdist (includes prebuilt dashboard/dist)
+        run: python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

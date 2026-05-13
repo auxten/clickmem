@@ -1,0 +1,16 @@
+{
+  "name": "clickmem",
+  "displayName": "ClickMem",
+  "version": "1.0.0",
+  "description": "Fire-and-forget raw transcript landing for ClickMem. Server hashes for dedup; hook returns in <50ms.",
+  "author": {
+    "name": "auxten"
+  },
+  "homepage": "https://github.com/auxten/clickmem",
+  "repository": "https://github.com/auxten/clickmem",
+  "license": "MIT",
+  "keywords": ["memory", "hooks", "clickmem"],
+  "category": "developer-tools",
+  "tags": ["memory", "ai-context"],
+  "hooks": "./hooks/hooks.json"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "clickmem-cursor-hooks",
+  "version": "1.0.0",
+  "description": "ClickMem Cursor stop-hook — fire-and-forget POST /v1/raw.",
+  "private": true,
+  "type": "module",
+  "main": "hooks/clickmem-stop.ts",
+  "scripts": {
+    "lint": "echo 'no lint configured'",
+    "check": "echo 'no checks configured'"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "files": [
+    "hooks/clickmem-stop.ts",
+    "hooks/hooks.json",
+    ".cursor-plugin/plugin.json"
+  ],
+  "license": "MIT"
+}

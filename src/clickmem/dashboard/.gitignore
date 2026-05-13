@@ -1,0 +1,8 @@
+# Phase 7 — the dashboard dist/ is force-included by hatch from the build
+# target. We intentionally do NOT commit it: `make dashboard` regenerates it
+# in CI and locally.
+dist/
+node_modules/
+.pnpm-store/
+*.log
+.DS_Store

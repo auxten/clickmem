@@ -21,15 +21,18 @@
 
 ## Learned Workspace Facts
 
-- ClickMem: local-first CEO Brain for AI coding agents; shared by Claude Code, Cursor, OpenClaw via MCP + REST API
-- CEO Brain: projects, decisions (with reasoning), principles (with confidence + evidence), episodes (TTL 180d), raw_transcripts; dedup gate prevents duplicates on insert
-- `memory setup` one-click: install service + hooks + discover agents + import history (background); `memory status` tracks progress
-- `memory import` reads Claude Code JSONL + Cursor agent-transcripts + CLAUDE.md/AGENTS.md; newest-first; incremental via `~/.clickmem/import-state.json`
-- Project-scoped recall: same-project results boosted 1.3x, global 1.0x, other-project penalized 0.6x; prevents cross-project knowledge pollution
-- chDB (embedded ClickHouse); `ReplacingMergeTree(updated_at)`; single-process lock; single port 9527 (REST + MCP SSE + hooks)
-- Local LLM: Qwen3.5 4-bit on MLX (8GB→2B, 16GB→4B, 32GB→9B); `enable_thinking=False` for structured JSON; embedding Qwen3-Embedding-0.6B (256d, never MPS)
-- Chunked extraction: conversations segmented at turn boundaries (max 5 × 4000 chars); dedup merges across segments; startup dedup cleans existing principles
-- PyPI `clickmem`; CI on Python 3.10/3.12/3.13; release via `v*` tags + Trusted Publisher
-- Config: `CLICKMEM_SERVER_HOST/PORT` (9527), `CLICKMEM_REMOTE`, `CLICKMEM_API_KEY`, `CLICKMEM_DB_PATH`, `CLICKMEM_LLM_MODE/MODEL/LOCAL_MODEL`
-- Tests: `MockEmbeddingEngine` + `MockLLMComplete` via conftest; in-memory chDB
-- Deploy: Mac Mini M4 32GB (`mini.local`) via Tailscale; launchd service with auto-restart
+- ClickMem: local memory system / belief-revision store for AI coding agents; explicit-only, **no LLM in the server loop**, no auto-extraction
+- Single port 9527 serves REST (`/v1/*`), MCP SSE (`/sse`), and the dashboard (`/dashboard`)
+- Two storage backends, switchable via `CLICKMEM_BACKEND`: `local` (embedded chDB, default) or `clickhouse` (ClickHouse Cloud or self-hosted via `clickhouse-connect`); all DDL flows through `src/clickmem/schema.py`
+- Single entity `Memory` with `kind ∈ {principle, decision, fact, doc, free}` and `status ∈ {active, contracted, conflicted}`; partitioned by `project_id` + `privacy ∈ {public, private, confidential}`
+- Conflict surfacing: on Expand/Revise, embeddings at cosine ≥ `CLICKMEM_CONFLICT_THRESHOLD` (default 0.92) inside the same `(project_id, kind)` flag both rows `conflicted`; pinned memories short-circuit (non-pinned conflicting commits are rejected outright)
+- Five first-class operations with CLI ↔ MCP parity: **Expand** (`remember`), **Revise** (`edit`), **Contract** (`forget`), **Reinforce** (`pin`), **Refuse** (`blacklist`)
+- Embedding-only retrieval: Qwen3-Embedding-0.6B at 256d on **CPU** (never MPS / GPU); no `mlx-lm`, no `litellm`, no `[llm]` extra
+- Recall scoring: same-project ×1.0, global (`project_id=''`) ×0.9, other-project ×0.0; privacy filter (`confidential` excluded unless `privacy_ack=true`); pinned boost; `recall_trace` exposes the per-candidate breakdown
+- Hooks are slim: Cursor stop hook fires-and-forgets `POST /v1/raw` (<50 ms); Claude Code `hooks.json` has only `SessionStart` (HTTP recall) and `Stop` (HTTP raw landing), both <100 ms — never an LLM call inline
+- Adapters live in `src/clickmem/adapters/` behind one `AgentAdapter` protocol; built-ins: Claude Code, Cursor, Codex, Aider, Continue.dev, Cline, Windsurf, Zed, JetBrains AI, generic
+- Config env vars: `CLICKMEM_SERVER_HOST` / `CLICKMEM_SERVER_PORT` (9527), `CLICKMEM_REMOTE`, `CLICKMEM_API_KEY`, `CLICKMEM_BACKEND`, `CLICKMEM_DB_PATH`, `CLICKMEM_CH_URL` / `CH_USER` / `CH_PASSWORD` / `CH_DATABASE`, `CLICKMEM_CONFLICT_THRESHOLD`, `CLICKMEM_EMBEDDING_MODEL`, `CLICKMEM_LOG_LEVEL`
+- Dashboard at `/dashboard` is the primary user-management surface (React + Vite + Tailwind + Recharts, bundled into the wheel via `tool.hatch.build.targets.wheel.force-include` of `src/clickmem/dashboard/dist`)
+- Tests use an in-memory chDB backend + `MockEmbeddingEngine` via `tests/conftest.py`; unit + httpx integration + MCP smoke layers
+- Package layout: `src/clickmem/` (Python), `src/clickmem/dashboard/` (TypeScript SPA), `cursor-hooks/`, `claude-hooks/`, `skills/`
+- PyPI `clickmem` 1.0.0 is the first release on the rebuilt code; CI on Python 3.10/3.12/3.13; release via `v*` tags + PyPI Trusted Publisher

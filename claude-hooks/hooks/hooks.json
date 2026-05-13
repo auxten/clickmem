@@ -1,0 +1,28 @@
+{
+  "description": "ClickMem hooks — SessionStart fetches relevant memory, Stop lands raw transcript. No UserPromptSubmit, no PostToolUse, no SessionEnd.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "${CLICKMEM_URL:-http://127.0.0.1:9527}/v1/recall",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "${CLICKMEM_URL:-http://127.0.0.1:9527}/v1/raw",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

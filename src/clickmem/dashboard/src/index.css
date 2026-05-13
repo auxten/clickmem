@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    font-family: theme("fontFamily.sans");
+    font-feature-settings: "cv11", "ss01", "ss02";
+  }
+}
+
+@layer components {
+  .clickmem-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.line.strong") transparent;
+  }
+  .clickmem-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .clickmem-scroll::-webkit-scrollbar-thumb {
+    background-color: theme("colors.line.strong");
+    border-radius: 8px;
+  }
+  .clickmem-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.04) 0%,
+      rgba(0, 0, 0, 0.08) 40%,
+      rgba(0, 0, 0, 0.04) 80%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+}

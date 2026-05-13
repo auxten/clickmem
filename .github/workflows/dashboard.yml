@@ -1,0 +1,38 @@
+name: dashboard
+
+on:
+  pull_request:
+    paths:
+      - "src/clickmem/dashboard/**"
+      - ".github/workflows/dashboard.yml"
+
+concurrency:
+  group: dashboard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: pnpm build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/clickmem/dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
