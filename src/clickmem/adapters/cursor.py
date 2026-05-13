@@ -1,7 +1,11 @@
 """Cursor adapter — reads ``~/.cursor/projects/*/agent-transcripts/*/*.jsonl``.
 
 Hook install bundles the slim ``cursor-hooks/`` package (shipped in repo root)
-into ``~/.cursor/plugins/clickmem/``.
+into ``~/.cursor/hooks/clickmem/`` (matches Cursor's modern hooks layout and the
+project rule "hooks source code in project tree, not .cursor/"). The legacy
+``~/.cursor/plugins/clickmem/`` install path is still recognised by
+:func:`detect` and cleaned up by :func:`uninstall_hooks` so the rename is
+transparent for existing users.
 """
 
 from __future__ import annotations
@@ -29,11 +33,15 @@ label = "Cursor"
 experimental = False
 
 _BASE = home() / ".cursor" / "projects"
-_PLUGIN_DST = home() / ".cursor" / "plugins" / "clickmem"
+_HOOK_DST = home() / ".cursor" / "hooks" / "clickmem"
+_LEGACY_PLUGIN_DST = home() / ".cursor" / "plugins" / "clickmem"
 
 
 def detect() -> bool:
-    return _BASE.is_dir() or (home() / ".cursor").is_dir()
+    if _BASE.is_dir() or (home() / ".cursor").is_dir():
+        return True
+    # Defensive: even if ~/.cursor was scrubbed, recognise a lingering install.
+    return _HOOK_DST.exists() or _LEGACY_PLUGIN_DST.exists()
 
 
 def _decode_slug(slug: str) -> str:
@@ -128,7 +136,7 @@ def _repo_cursor_hooks_dir() -> Path | None:
 
 
 def install_hooks(server_url: str = "") -> dict[str, Any]:
-    """Copy ``cursor-hooks/`` source tree to ``~/.cursor/plugins/clickmem/``.
+    """Copy ``cursor-hooks/`` source tree to ``~/.cursor/hooks/clickmem/``.
 
     The stop-hook resolves the server URL at runtime from
     ``CLICKMEM_REMOTE`` / ``CLICKMEM_SERVER_HOST`` / ``CLICKMEM_SERVER_PORT``,
@@ -144,26 +152,58 @@ def install_hooks(server_url: str = "") -> dict[str, Any]:
             "hint": "this needs a real install path when shipped as a pip wheel; see Phase 10 packaging",
         }
 
-    _PLUGIN_DST.parent.mkdir(parents=True, exist_ok=True)
-    if _PLUGIN_DST.exists():
-        shutil.rmtree(_PLUGIN_DST)
-    shutil.copytree(src, _PLUGIN_DST)
+    _HOOK_DST.parent.mkdir(parents=True, exist_ok=True)
+    if _HOOK_DST.exists() or _HOOK_DST.is_symlink():
+        if _HOOK_DST.is_symlink() or _HOOK_DST.is_file():
+            _HOOK_DST.unlink()
+        else:
+            shutil.rmtree(_HOOK_DST)
+    shutil.copytree(src, _HOOK_DST)
 
     if server_url:
-        env_file = _PLUGIN_DST / "hooks" / ".env"
+        env_file = _HOOK_DST / "hooks" / ".env"
         env_file.write_text(f"CLICKMEM_REMOTE={server_url.rstrip('/')}\n", encoding="utf-8")
 
-    return {"ok": True, "installed": True, "agent": name, "path": str(_PLUGIN_DST), "source": str(src)}
+    return {"ok": True, "installed": True, "agent": name, "path": str(_HOOK_DST), "source": str(src)}
+
+
+def _remove_path(p: Path) -> tuple[bool, str | None]:
+    """Best-effort remove a directory, file, or symlink. Returns (existed, error)."""
+    if not (p.exists() or p.is_symlink()):
+        return False, None
+    try:
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+        else:
+            shutil.rmtree(p)
+        return True, None
+    except OSError as e:
+        return True, str(e)
 
 
 def uninstall_hooks() -> dict[str, Any]:
-    if _PLUGIN_DST.exists():
-        try:
-            shutil.rmtree(_PLUGIN_DST)
-            return {"ok": True, "installed": False, "agent": name, "path": str(_PLUGIN_DST)}
-        except OSError as e:
-            return {"ok": False, "installed": True, "agent": name, "error": str(e)}
-    return {"ok": True, "installed": False, "agent": name, "message": "no plugin directory"}
+    """Remove the modern install path, plus best-effort the legacy plugin path."""
+    removed: list[str] = []
+    errors: list[str] = []
+
+    for path in (_HOOK_DST, _LEGACY_PLUGIN_DST):
+        existed, err = _remove_path(path)
+        if err:
+            errors.append(f"{path}: {err}")
+        elif existed:
+            removed.append(str(path))
+
+    if errors:
+        return {
+            "ok": False,
+            "installed": True,
+            "agent": name,
+            "removed": removed,
+            "error": "; ".join(errors),
+        }
+    if not removed:
+        return {"ok": True, "installed": False, "agent": name, "message": "no hook directory"}
+    return {"ok": True, "installed": False, "agent": name, "removed": removed, "path": str(_HOOK_DST)}
 
 
 def export_blob(dst_path: Path) -> dict[str, Any]:

@@ -4,9 +4,12 @@ experimental flag honoured for cline + jetbrains.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from clickmem import adapters
+from clickmem.adapters import cursor
 
 
 EXPECTED_NAMES = [
@@ -71,3 +74,73 @@ def test_iter_raw_sessions_safe_for_missing_dirs():
     rather than raising."""
     for h in adapters.registry:
         list(h.iter_raw_sessions(since=None))  # must not raise
+
+
+def _fake_cursor_hooks_src(root: Path) -> Path:
+    """Build a minimal ``cursor-hooks/`` source tree under ``root``."""
+    src = root / "cursor-hooks"
+    (src / "hooks").mkdir(parents=True)
+    (src / "hooks" / "hooks.json").write_text("{}", encoding="utf-8")
+    (src / "hooks" / "stop.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    return src
+
+
+def test_cursor_install_writes_to_hooks_and_uninstall_cleans_both(monkeypatch, tmp_path):
+    """install_hooks must land in ~/.cursor/hooks/clickmem; uninstall_hooks
+    must clean both the modern path AND a legacy ~/.cursor/plugins/clickmem.
+    """
+    hook_dst = tmp_path / ".cursor" / "hooks" / "clickmem"
+    legacy_dst = tmp_path / ".cursor" / "plugins" / "clickmem"
+    monkeypatch.setattr(cursor, "_HOOK_DST", hook_dst)
+    monkeypatch.setattr(cursor, "_LEGACY_PLUGIN_DST", legacy_dst)
+
+    src = _fake_cursor_hooks_src(tmp_path / "repo")
+    monkeypatch.setattr(cursor, "_repo_cursor_hooks_dir", lambda: src)
+
+    res = cursor.install_hooks(server_url="http://127.0.0.1:9527")
+    assert res["ok"] is True
+    assert res["installed"] is True
+    assert res["path"] == str(hook_dst)
+    assert hook_dst.is_dir()
+    assert (hook_dst / "hooks" / "hooks.json").is_file()
+    env_file = hook_dst / "hooks" / ".env"
+    assert env_file.is_file()
+    assert "CLICKMEM_REMOTE=http://127.0.0.1:9527" in env_file.read_text(encoding="utf-8")
+
+    legacy_dst.mkdir(parents=True)
+    (legacy_dst / "marker").write_text("legacy", encoding="utf-8")
+
+    res = cursor.uninstall_hooks()
+    assert res["ok"] is True
+    assert res["installed"] is False
+    assert not hook_dst.exists()
+    assert not legacy_dst.exists()
+    assert str(hook_dst) in res["removed"]
+    assert str(legacy_dst) in res["removed"]
+
+
+def test_cursor_uninstall_idempotent_when_nothing_installed(monkeypatch, tmp_path):
+    hook_dst = tmp_path / ".cursor" / "hooks" / "clickmem"
+    legacy_dst = tmp_path / ".cursor" / "plugins" / "clickmem"
+    monkeypatch.setattr(cursor, "_HOOK_DST", hook_dst)
+    monkeypatch.setattr(cursor, "_LEGACY_PLUGIN_DST", legacy_dst)
+
+    res = cursor.uninstall_hooks()
+    assert res["ok"] is True
+    assert res["installed"] is False
+    assert res.get("message") == "no hook directory"
+
+
+def test_cursor_detect_recognises_legacy_install(monkeypatch, tmp_path):
+    """detect() should be True when only the legacy plugin path exists."""
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(cursor, "_BASE", fake_home / ".cursor" / "projects")
+    hook_dst = fake_home / ".cursor" / "hooks" / "clickmem"
+    legacy_dst = fake_home / ".cursor" / "plugins" / "clickmem"
+    monkeypatch.setattr(cursor, "_HOOK_DST", hook_dst)
+    monkeypatch.setattr(cursor, "_LEGACY_PLUGIN_DST", legacy_dst)
+    monkeypatch.setattr(cursor, "home", lambda: fake_home)
+
+    assert cursor.detect() is False
+    legacy_dst.mkdir(parents=True)
+    assert cursor.detect() is True

@@ -12,7 +12,7 @@ from typing import Any, List, Optional
 
 from clickmem.adapters import registry
 from clickmem.config import get_config
-from clickmem.events import write as event_write
+from clickmem.local_or_remote import event_write
 
 
 _log = logging.getLogger(__name__)

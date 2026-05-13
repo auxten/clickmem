@@ -148,6 +148,14 @@ def _auth_dependency():
 
 def create_app() -> FastAPI:
     cfg = get_config(refresh=True)
+
+    # Tell the local_or_remote shim that this process is the server itself.
+    # Inside the server we always go through the in-process backend directly;
+    # the shim must not auto-probe and HTTP-call us back via 127.0.0.1.
+    from clickmem import local_or_remote as _local_or_remote
+
+    _local_or_remote.mark_in_server_process()
+
     app = FastAPI(title="ClickMem", version=__version__, default_response_class=JSONResponse)
 
     app.add_middleware(

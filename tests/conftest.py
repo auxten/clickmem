@@ -45,10 +45,12 @@ def _isolate_env(monkeypatch, tmp_path) -> Iterator[Path]:
     from clickmem import backend as backend_mod
     from clickmem import config as config_mod
     from clickmem import embedding as embedding_mod
+    from clickmem import local_or_remote as local_or_remote_mod
 
     config_mod._cached = None
     backend_mod.reset_backend()
     embedding_mod._engine = None
+    local_or_remote_mod.reset()
 
     # Inject the deterministic test embedder so no model weights are loaded.
     from clickmem.embedding import MockEmbeddingEngine, set_embedder

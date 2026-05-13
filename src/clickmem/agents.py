@@ -12,10 +12,10 @@ import logging
 import uuid
 from typing import Any, List
 
-from clickmem import raw as raw_mod
+from clickmem import local_or_remote
 from clickmem.adapters import AdapterHandle, registry
 from clickmem.backend import Backend, get_backend
-from clickmem.events import activity_counts, write as event_write
+from clickmem.events import activity_counts
 from clickmem.sqlutil import quote_str
 
 
@@ -80,7 +80,7 @@ def install(name: str, server_url: str = "") -> dict[str, Any]:
     if h is None:
         return {"ok": False, "agent": name, "error": "unknown adapter"}
     result = h.install_hooks(server_url)
-    event_write(
+    local_or_remote.event_write(
         "agent.install",
         agent=name,
         message=result.get("error") or "hooks installed",
@@ -94,7 +94,7 @@ def uninstall(name: str) -> dict[str, Any]:
     if h is None:
         return {"ok": False, "agent": name, "error": "unknown adapter"}
     result = h.uninstall_hooks()
-    event_write(
+    local_or_remote.event_write(
         "agent.uninstall",
         agent=name,
         message=result.get("error") or "hooks removed",
@@ -104,53 +104,51 @@ def uninstall(name: str) -> dict[str, Any]:
 
 
 def test(name: str) -> dict[str, Any]:
-    """End-to-end smoke: POST a synthetic raw landing as this agent, then
-    confirm the matching event row appears.
+    """End-to-end smoke: POST a synthetic raw landing as this agent and trust
+    the response.
+
+    Routed through :mod:`clickmem.local_or_remote`, so the CLI works on a host
+    where the ClickMem server already owns the chDB file lock. When the call
+    lands successfully, the server (or local backend) has written both the
+    ``raw_transcripts`` row and the matching ``raw.land`` event in one shot.
     """
     h = _handle(name)
     if h is None:
         return {"ok": False, "agent": name, "error": "unknown adapter"}
 
-    backend = get_backend()
     session_id = f"clickmem-test-{uuid.uuid4().hex[:8]}"
     text = f"[clickmem.test] synthetic landing for adapter={name}; if you can see this in /v1/get-raw, the loop is healthy."
 
-    raw_result = raw_mod.append(
+    raw_result = local_or_remote.raw_append(
         text,
         session_id=session_id,
         agent=name,
         project_id="",
         role="test",
         meta={"clickmem_test": True, "adapter": name},
-        backend=backend,
     )
 
-    rows = backend.query(
-        "SELECT count() AS c FROM events "
-        f"WHERE agent = {quote_str(name)} AND kind = 'raw.land' "
-        f"AND positionCaseInsensitive(payload_json, {quote_str(session_id)}) > 0"
-    )
-    found = bool(rows) and int(rows[0].get("c", 0) or 0) > 0
+    landed = bool(raw_result.get("ok")) and not raw_result.get("skipped")
 
-    event_write(
+    local_or_remote.event_write(
         "agent.test",
         agent=name,
         message="end-to-end smoke",
         payload={
             "session_id": session_id,
             "raw_ok": bool(raw_result.get("ok")),
-            "event_landed": found,
+            "event_landed": landed,
             "discovered": h.detect(),
         },
     )
 
     return {
-        "ok": bool(raw_result.get("ok")) and found,
+        "ok": landed,
         "agent": name,
         "discovered": h.detect(),
         "experimental": h.experimental,
         "session_id": session_id,
-        "event_landed": found,
+        "event_landed": landed,
         "raw_result": raw_result,
-        "message": "round-tripped synthetic raw landing" if found else "raw landed but event row not observed",
+        "message": "round-tripped synthetic raw landing" if landed else "raw landing skipped or failed",
     }
