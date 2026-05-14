@@ -21,8 +21,11 @@ from typing import Any, Iterator, List
 
 from clickmem.adapters.base import (
     RawSession,
+    V0ResidueItem,
+    backup_file,
     home,
     iter_jsonl,
+    remove_path,
     safe_mtime,
 )
 
@@ -216,3 +219,55 @@ def export_blob(dst_path: Path) -> dict[str, Any]:
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst_path.write_text(json.dumps({"agent": name, "items": items}, indent=2), encoding="utf-8")
     return {"ok": True, "agent": name, "items": len(items), "path": str(dst_path)}
+
+
+# ---------- v0 residue cleanup -------------------------------------------
+
+
+def detect_v0_residue() -> list[V0ResidueItem]:
+    """Surface the v0 ``~/.cursor/plugins/clickmem/`` install path.
+
+    v0 lived under Cursor's plugin tree (real dir or symlink); v1 lives at
+    ``~/.cursor/hooks/clickmem/``. We only flag the v0 path so re-running
+    the cleaner after a v1 install is a no-op.
+    """
+    items: list[V0ResidueItem] = []
+    if _LEGACY_PLUGIN_DST.exists() or _LEGACY_PLUGIN_DST.is_symlink():
+        kind = "symlink" if _LEGACY_PLUGIN_DST.is_symlink() else ("dir" if _LEGACY_PLUGIN_DST.is_dir() else "file")
+        items.append(V0ResidueItem(
+            adapter=name,
+            path=str(_LEGACY_PLUGIN_DST),
+            issue=f"~/.cursor/plugins/clickmem/ ({kind}) is a v0 install path",
+            action="rm",
+            detail={"kind": kind},
+        ))
+    return items
+
+
+def clean_v0_residue(items: list[V0ResidueItem]) -> list[dict[str, Any]]:
+    """Remove the v0 cursor plugin path. Symlinks are unlinked even if dangling."""
+    log: list[dict[str, Any]] = []
+    for item in items:
+        if item.adapter != name:
+            continue
+        if str(item.path) != str(_LEGACY_PLUGIN_DST):
+            continue
+        try:
+            backup = backup_file(_LEGACY_PLUGIN_DST) if not _LEGACY_PLUGIN_DST.is_symlink() else None
+            existed, err = remove_path(_LEGACY_PLUGIN_DST)
+            log.append({
+                "adapter": name,
+                "path": str(_LEGACY_PLUGIN_DST),
+                "action": "rm",
+                "detail": f"removed legacy ~/.cursor/plugins/clickmem (existed={existed})",
+                "backup": str(backup) if backup else None,
+                "error": err,
+            })
+        except OSError as e:
+            log.append({
+                "adapter": name,
+                "path": str(_LEGACY_PLUGIN_DST),
+                "action": "rm",
+                "error": str(e),
+            })
+    return log

@@ -11,8 +11,11 @@ from typing import Any, Iterator, List
 
 from clickmem.adapters.base import (
     RawSession,
+    V0ResidueItem,
+    backup_file,
     base_url_default,
     home,
+    is_v0_hook_entry,
     iter_jsonl,
     safe_mtime,
 )
@@ -172,3 +175,99 @@ def export_blob(dst_path: Path) -> dict[str, Any]:
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst_path.write_text(json.dumps({"agent": name, "items": items}, indent=2), encoding="utf-8")
     return {"ok": True, "agent": name, "items": len(items), "path": str(dst_path)}
+
+
+# ---------- v0 residue cleanup -------------------------------------------
+
+
+def _hooks_v0_findings(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Walk ``hooks.<key>[]`` looking for v0 entries (curl shell calls)."""
+    findings: list[dict[str, Any]] = []
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return findings
+    for key, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        for idx, entry in enumerate(entries):
+            if is_v0_hook_entry(entry):
+                findings.append({"hook_key": key, "hook_idx": idx, "entry": entry})
+    return findings
+
+
+def detect_v0_residue() -> list[V0ResidueItem]:
+    """Surface every pre-v1 Codex CLI hook artefact under ``$HOME``.
+
+    v0 wrote ``~/.codex/hooks.json`` with ``type: shell`` curl commands
+    pointing at the legacy ``/hooks/claude-code`` endpoint. v1 writes
+    ``type: http`` entries against ``/v1/recall`` and ``/v1/raw`` — those
+    are explicitly NOT flagged here so the cleaner is idempotent after
+    install.
+    """
+    items: list[V0ResidueItem] = []
+    if not _HOOKS_JSON.is_file():
+        return items
+    data = _load_hooks()
+    findings = _hooks_v0_findings(data)
+    if findings:
+        items.append(V0ResidueItem(
+            adapter=name,
+            path=str(_HOOKS_JSON),
+            issue=f"{len(findings)} v0 hook entries reference clickmem/9527",
+            action="edit-in-place",
+            detail={"hook_findings": findings},
+        ))
+    return items
+
+
+def _strip_v0_hooks_from_codex(data: dict[str, Any]) -> int:
+    """Drop every v0 entry from ``hooks.<key>[]`` in-place."""
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return 0
+    removed = 0
+    for key in list(hooks.keys()):
+        entries = hooks.get(key)
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries if not is_v0_hook_entry(e)]
+        removed += len(entries) - len(kept)
+        if kept:
+            hooks[key] = kept
+        else:
+            hooks.pop(key, None)
+    if hooks:
+        data["hooks"] = hooks
+    else:
+        data["hooks"] = {}
+    return removed
+
+
+def clean_v0_residue(items: list[V0ResidueItem]) -> list[dict[str, Any]]:
+    """Strip v0 hook entries from ``~/.codex/hooks.json`` in-place."""
+    log: list[dict[str, Any]] = []
+    for item in items:
+        if item.adapter != name:
+            continue
+        if str(item.path) != str(_HOOKS_JSON):
+            continue
+        try:
+            backup = backup_file(_HOOKS_JSON)
+            data = _load_hooks()
+            n = _strip_v0_hooks_from_codex(data)
+            _save_hooks(data)
+            log.append({
+                "adapter": name,
+                "path": str(_HOOKS_JSON),
+                "action": "edit-in-place",
+                "detail": f"stripped {n} v0 hook entries from codex hooks.json",
+                "backup": str(backup) if backup else None,
+            })
+        except OSError as e:
+            log.append({
+                "adapter": name,
+                "path": str(_HOOKS_JSON),
+                "action": "edit-in-place",
+                "error": str(e),
+            })
+    return log

@@ -31,6 +31,7 @@ from clickmem.adapters import (
     windsurf,
     zed,
 )
+from clickmem.adapters.base import V0ResidueItem
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +107,30 @@ class AdapterHandle:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "agent": self.name, "error": str(e)}
 
+    def detect_v0_residue(self) -> list[V0ResidueItem]:
+        """Per-adapter v0 install detection. Adapters without this method
+        return an empty list (their v0 shape was either non-existent or
+        already handled by another adapter)."""
+        fn = getattr(self.module, "detect_v0_residue", None)
+        if fn is None:
+            return []
+        try:
+            return list(fn())
+        except Exception as e:  # noqa: BLE001
+            _log.warning("adapter.detect_v0_residue failed for %s: %s", self.name, e)
+            return []
+
+    def clean_v0_residue(self, items: list[V0ResidueItem]) -> list[dict]:
+        """Run the per-adapter cleaner over the supplied findings."""
+        fn = getattr(self.module, "clean_v0_residue", None)
+        if fn is None:
+            return []
+        try:
+            return list(fn(items))
+        except Exception as e:  # noqa: BLE001
+            _log.warning("adapter.clean_v0_residue failed for %s: %s", self.name, e)
+            return [{"adapter": self.name, "error": str(e)}]
+
 
 _modules: List[ModuleType] = [
     claude_code,
@@ -137,6 +162,7 @@ def get(name: str) -> Optional[AdapterHandle]:
 
 __all__ = [
     "AdapterHandle",
+    "V0ResidueItem",
     "base",
     "get",
     "get_registry",
