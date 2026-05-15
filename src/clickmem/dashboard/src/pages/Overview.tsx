@@ -25,6 +25,7 @@ import { Empty } from "../components/Empty";
 import { LoadingShimmer } from "../components/LoadingShimmer";
 import { Button } from "../components/Button";
 import { classNames, fromNow, formatNumber, preview } from "../lib/format";
+import { memoryKindLabel } from "../lib/labels";
 
 interface OverviewProps {
   refreshTick: number;
@@ -108,7 +109,7 @@ export default function OverviewPage({ refreshTick, agents }: OverviewProps) {
 
   const kindData = useMemo(() => {
     const rows = (kindsQ.data || []).map((r) => ({
-      label: r.kind || "free",
+      label: memoryKindLabel(r.kind || "free"),
       value: r.c,
       color: KIND_PALETTE[r.kind] || "#94a3b8",
     }));
@@ -261,7 +262,7 @@ export default function OverviewPage({ refreshTick, agents }: OverviewProps) {
           )}
         </Card>
 
-        <Card title="Memories by Kind" subtitle="Principle / decision / fact / doc / free">
+        <Card title="Memories by Type" subtitle="Rules / decisions / facts / documents / notes">
           {kindsQ.loading && !kindsQ.data ? (
             <LoadingShimmer lines={5} />
           ) : kindData.length === 0 ? (
@@ -366,7 +367,7 @@ export default function OverviewPage({ refreshTick, agents }: OverviewProps) {
               />
               <HealthRow
                 icon={<CheckCircle2 size={14} className="text-good" />}
-                label="Contracted"
+                label="Archived"
                 value={formatNumber(statsQ.data?.contracted ?? 0)}
               />
               <HealthRow

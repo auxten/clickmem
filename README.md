@@ -54,7 +54,7 @@ clickmem hooks install
 clickmem dashboard open
 ```
 
-That starts a local server, installs supported agent hooks, and opens the dashboard.
+That starts a local server, installs supported agent hooks, and opens the dashboard. Hook installation does not import existing memories or agent rule files.
 
 From there, you can add memories manually, let connected agents commit refined memories, import curated docs such as `AGENTS.md` and `CLAUDE.md`, and inspect everything from the dashboard.
 

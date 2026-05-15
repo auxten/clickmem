@@ -102,6 +102,7 @@ export interface AgentRow {
   experimental: boolean;
   discovered: boolean;
   installed: boolean;
+  host?: string;
   session_count_24h: number;
   last_event: string;
 }

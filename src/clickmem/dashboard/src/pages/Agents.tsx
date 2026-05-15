@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Download, FlaskConical, PowerOff, Wrench } from "lucide-react";
+import { FlaskConical, PowerOff, Wrench } from "lucide-react";
 import { api, AgentRow } from "../api";
 import { useApi } from "../hooks/useApi";
 import { Card } from "../components/Card";
@@ -8,7 +8,6 @@ import { Button } from "../components/Button";
 import { Pill } from "../components/Pill";
 import { Empty } from "../components/Empty";
 import { LoadingShimmer } from "../components/LoadingShimmer";
-import { SparkLine } from "../components/SparkLine";
 import { TrafficLight, Status } from "../components/TrafficLight";
 import { useToast } from "../components/Toast";
 import { formatNumber, fromNow } from "../lib/format";
@@ -31,27 +30,43 @@ export default function AgentsPage({ refreshTick }: Props) {
       ) : !listQ.data || listQ.data.length === 0 ? (
         <Card>
           <Empty
-            title="No adapters discovered"
-            description="ClickMem's built-in adapters appear here as the registry lights up."
+            title="No installed agents discovered"
+            description="Install an agent on this host and it will appear here."
           />
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {listQ.data.map((agent) => (
-            <AgentCard
-              key={agent.name}
-              agent={agent}
-              focused={focus === agent.name}
-              onRefresh={() => listQ.refresh()}
-            />
-          ))}
-        </div>
+        <Card padded={false}>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-line/60 text-sm">
+              <thead className="bg-canvas-subtle/60 text-left text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                <tr>
+                  <th className="px-5 py-3">Agent</th>
+                  <th className="px-4 py-3">Host</th>
+                  <th className="px-4 py-3">Events · 24h</th>
+                  <th className="px-4 py-3">Last event</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line/60 bg-canvas-paper">
+                {listQ.data.map((agent) => (
+                  <AgentTableRow
+                    key={agent.name}
+                    agent={agent}
+                    focused={focus === agent.name}
+                    onRefresh={() => listQ.refresh()}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   );
 }
 
-function AgentCard({
+function AgentTableRow({
   agent,
   focused,
   onRefresh,
@@ -61,11 +76,7 @@ function AgentCard({
   onRefresh: () => void;
 }) {
   const toast = useToast();
-  const [busy, setBusy] = useState<"" | "install" | "uninstall" | "test" | "reinstall">("");
-
-  const activityQ = useApi(() => api.agentActivity(agent.name, 24), {
-    deps: [agent.name],
-  });
+  const [busy, setBusy] = useState<"" | "uninstall" | "test" | "reinstall">("");
 
   const status: Status = agent.installed
     ? "online"
@@ -73,13 +84,8 @@ function AgentCard({
       ? "warn"
       : "unknown";
 
-  const total24h = useMemo(
-    () => (activityQ.data || []).reduce((s, b) => s + b.count, 0),
-    [activityQ.data],
-  );
-
   const run = async (
-    op: "install" | "uninstall" | "test" | "reinstall",
+    op: "uninstall" | "test" | "reinstall",
   ) => {
     setBusy(op);
     try {
@@ -87,9 +93,6 @@ function AgentCard({
         await api.uninstallAgent(agent.name);
         const r = await api.installAgent(agent.name);
         toast.push("info", `${agent.label} reinstalled`, r.message);
-      } else if (op === "install") {
-        const r = await api.installAgent(agent.name);
-        toast.push("info", `${agent.label} install`, r.message);
       } else if (op === "uninstall") {
         const r = await api.uninstallAgent(agent.name);
         toast.push("info", `${agent.label} uninstall`, r.message);
@@ -106,52 +109,32 @@ function AgentCard({
   };
 
   return (
-    <Card
-      className={focused ? "ring-2 ring-accent-project/40" : ""}
-      title={
-        <span className="inline-flex items-center gap-2">
-          {agent.label}
-          {agent.experimental && (
-            <Pill tone="warn">experimental</Pill>
-          )}
-        </span>
-      }
-      subtitle={`adapter · ${agent.name}`}
-      action={<TrafficLight status={status} pulse label={agent.installed ? "installed" : agent.discovered ? "discovered" : "n/a"} />}
-    >
-      <div className="grid grid-cols-3 gap-3 text-sm">
-        <Stat label="Sessions · 24h" value={formatNumber(agent.session_count_24h)} />
-        <Stat label="Events · 24h" value={formatNumber(total24h)} />
-        <Stat
-          label="Last event"
-          value={agent.last_event ? fromNow(agent.last_event) : "—"}
+    <tr className={focused ? "bg-accent-project/5 ring-1 ring-inset ring-accent-project/30" : ""}>
+      <td className="px-5 py-3.5">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-text-primary">{agent.label}</span>
+          {agent.experimental && <Pill tone="warn">experimental</Pill>}
+        </div>
+        <p className="mt-0.5 font-mono text-xs text-text-muted">{agent.name}</p>
+      </td>
+      <td className="px-4 py-3.5 font-mono text-xs text-text-secondary">
+        {agent.host || window.location.hostname || "localhost"}
+      </td>
+      <td className="px-4 py-3.5 tabular-nums text-text-primary">
+        {formatNumber(agent.session_count_24h)}
+      </td>
+      <td className="px-4 py-3.5 text-text-secondary">
+        {agent.last_event ? fromNow(agent.last_event) : "—"}
+      </td>
+      <td className="px-4 py-3.5">
+        <TrafficLight
+          status={status}
+          pulse
+          label={agent.installed ? "installed" : agent.discovered ? "discovered" : "n/a"}
         />
-      </div>
-
-      <div className="mt-4 text-accent-project">
-        <SparkLine
-          values={
-            activityQ.data && activityQ.data.length > 0
-              ? activityQ.data.map((b) => b.count)
-              : []
-          }
-          width={420}
-          height={48}
-          ariaLabel={`${agent.label} 24h activity`}
-        />
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          variant="primary"
-          icon={<Download size={12} />}
-          loading={busy === "install"}
-          disabled={agent.installed}
-          onClick={() => run("install")}
-        >
-          Install
-        </Button>
+      </td>
+      <td className="px-5 py-3.5">
+        <div className="flex justify-end gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -181,15 +164,7 @@ function AgentCard({
           Test
         </Button>
       </div>
-    </Card>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-line bg-canvas-paper px-3 py-2">
-      <p className="text-[11px] uppercase tracking-wide text-text-muted">{label}</p>
-      <p className="mt-1 text-sm font-semibold tabular-nums text-text-primary">{value}</p>
-    </div>
+      </td>
+    </tr>
   );
 }

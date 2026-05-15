@@ -176,19 +176,48 @@ async def test_projects_endpoints(client):
 # ---------- Agents --------------------------------------------------------
 
 
-async def test_agents_listing_lists_ten(client):
+async def test_agents_listing_lists_installed_agents_with_host(client):
     r = await client.get("/v1/agents")
     assert r.status_code == 200
-    names = [a["name"] for a in r.json()]
-    assert len(names) == 10
-    assert "claude_code" in names
+    rows = r.json()
+    names = [a["name"] for a in rows]
+    assert rows
     assert "generic" in names
+    assert all(a["installed"] is True for a in rows)
+    assert all(a["host"] for a in rows)
 
 
 async def test_agents_activity_returns_buckets(client):
     r = await client.get("/v1/agents/cursor/activity", params={"hours": 1})
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+async def test_agent_install_does_not_import_existing_docs(client, monkeypatch):
+    """Installing an adapter wires hooks only; existing docs import is explicit."""
+    from clickmem import server as server_mod
+
+    def fail_import(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("agent install must not import existing docs")
+
+    monkeypatch.setattr(server_mod.import_docs_mod, "run_for_adapter", fail_import)
+    monkeypatch.setattr(
+        server_mod.agents_mod,
+        "install",
+        lambda name, server_url="": {
+            "ok": True,
+            "installed": True,
+            "agent": name,
+            "imported": False,
+            "message": "hooks installed",
+        },
+    )
+
+    r = await client.post("/v1/agents/cursor/install")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["installed"] is True
+    assert body["imported"] is False
 
 
 # ---------- Phase 10 backend gap fixes -----------------------------------

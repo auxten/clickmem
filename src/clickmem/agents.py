@@ -9,6 +9,7 @@ the adapter handle's own implementation.
 from __future__ import annotations
 
 import logging
+import socket
 import uuid
 from typing import Any, List
 
@@ -56,14 +57,19 @@ def _handle(name: str) -> AdapterHandle | None:
 def list_agents(backend: Backend | None = None) -> List[dict[str, Any]]:
     backend = backend or get_backend()
     out: list[dict[str, Any]] = []
+    host = socket.gethostname() or "localhost"
     for h in registry:
+        discovered = h.detect()
+        if not discovered:
+            continue
         out.append(
             {
                 "name": h.name,
                 "label": h.label,
                 "experimental": h.experimental,
-                "discovered": h.detect(),
-                "installed": False,  # populated by per-adapter status if we add it later
+                "discovered": discovered,
+                "installed": discovered,
+                "host": host,
                 "session_count_24h": _session_count(h.name, backend),
                 "last_event": _last_event_at(h.name, backend),
             }
@@ -76,10 +82,17 @@ def activity(name: str, hours: int = 24, backend: Backend | None = None) -> List
 
 
 def install(name: str, server_url: str = "") -> dict[str, Any]:
+    """Install only the live adapter hooks.
+
+    Historical docs/rules from other agents are intentionally imported through
+    ``import-docs`` or ``/v1/imports/{name}/run`` so install stays reversible.
+    """
     h = _handle(name)
     if h is None:
         return {"ok": False, "agent": name, "error": "unknown adapter"}
     result = h.install_hooks(server_url)
+    result.setdefault("imported", False)
+    result.setdefault("import_hint", f"run `clickmem import-docs` or POST /v1/imports/{name}/run explicitly")
     local_or_remote.event_write(
         "agent.install",
         agent=name,

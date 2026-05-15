@@ -32,6 +32,12 @@ import { DiffView } from "../components/DiffView";
 import { SparkLine } from "../components/SparkLine";
 import { useToast } from "../components/Toast";
 import { classNames, formatNumber, fromNow, preview, shortDate } from "../lib/format";
+import {
+  MEMORY_KIND_OPTIONS,
+  MEMORY_STATUS_OPTIONS,
+  memoryKindLabel,
+  memoryStatusLabel,
+} from "../lib/labels";
 
 interface Props {
   refreshTick: number;
@@ -67,7 +73,7 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
     search: "",
     kind: "" as "" | MemoryKind,
     privacy: "" as "" | MemoryPrivacy,
-    status: "" as "" | MemoryStatus,
+    status: "active" as "" | MemoryStatus,
     project_id: "",
     pinned: forcePinned ? true : (undefined as boolean | undefined),
   });
@@ -77,19 +83,21 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    if (params.get("new") === "1") {
-      setCreating(true);
-      params.delete("new");
-      setParams(params, { replace: true });
-    }
+    const shouldCreate = params.get("new") === "1";
     const id = params.get("id");
+    if (shouldCreate) {
+      setCreating(true);
+    }
     if (id) {
       setDrawerId(id);
-      params.delete("id");
-      setParams(params, { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (shouldCreate || id) {
+      const next = new URLSearchParams(params);
+      next.delete("new");
+      next.delete("id");
+      setParams(next, { replace: true });
+    }
+  }, [params, setParams]);
 
   const listQ = useApi(
     () =>
@@ -173,13 +181,19 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
             />
           </div>
           <FilterSelect
-            label="Kind"
+            label="Type"
             value={filters.kind}
             onChange={(v) => {
               setOffset(0);
               setFilters({ ...filters, kind: v as MemoryKind | "" });
             }}
-            options={["", "principle", "decision", "fact", "doc", "free"]}
+            options={[
+              { value: "", label: "All types" },
+              ...MEMORY_KIND_OPTIONS.map((kind) => ({
+                value: kind,
+                label: memoryKindLabel(kind),
+              })),
+            ]}
           />
           <FilterSelect
             label="Privacy"
@@ -191,13 +205,19 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
             options={["", "public", "private", "confidential"]}
           />
           <FilterSelect
-            label="Status"
+            label="State"
             value={filters.status}
             onChange={(v) => {
               setOffset(0);
               setFilters({ ...filters, status: v as MemoryStatus | "" });
             }}
-            options={["", "active", "conflicted", "contracted"]}
+            options={[
+              { value: "", label: "All records" },
+              ...MEMORY_STATUS_OPTIONS.map((status) => ({
+                value: status,
+                label: memoryStatusLabel(status),
+              })),
+            ]}
           />
           <input
             value={filters.project_id}
@@ -258,7 +278,7 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
                 runBulk("forget", { reason: "bulk forget from dashboard" })
               }
             >
-              Forget
+              Archive
             </Button>
             <button
               type="button"
@@ -282,10 +302,10 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
                   />
                 </th>
                 <th className="text-left font-medium py-2.5">Content</th>
-                <th className="text-left font-medium py-2.5 hidden md:table-cell">Kind</th>
+                <th className="text-left font-medium py-2.5 hidden md:table-cell">Type</th>
                 <th className="text-left font-medium py-2.5 hidden md:table-cell">Privacy</th>
                 <th className="text-left font-medium py-2.5 hidden lg:table-cell">Project</th>
-                <th className="text-left font-medium py-2.5 hidden lg:table-cell">Status</th>
+                <th className="text-left font-medium py-2.5 hidden lg:table-cell">State</th>
                 <th className="text-right font-medium pr-5 py-2.5">Updated</th>
               </tr>
             </thead>
@@ -316,7 +336,7 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
                               search: "",
                               kind: "",
                               privacy: "",
-                              status: "",
+                              status: "active",
                               project_id: "",
                               pinned: forcePinned ? true : undefined,
                             })
@@ -366,7 +386,9 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
                       )}
                     </td>
                     <td className="py-3 hidden md:table-cell">
-                      <Pill tone={KIND_TONES[m.kind] || "neutral"}>{m.kind}</Pill>
+                      <Pill tone={KIND_TONES[m.kind] || "neutral"}>
+                        {memoryKindLabel(m.kind)}
+                      </Pill>
                     </td>
                     <td className="py-3 hidden md:table-cell">
                       <Pill tone={PRIVACY_TONES[m.privacy] || "info"}>{m.privacy}</Pill>
@@ -377,7 +399,9 @@ export default function MemoriesPage({ refreshTick, forcePinned }: Props) {
                       </span>
                     </td>
                     <td className="py-3 hidden lg:table-cell">
-                      <Pill tone={STATUS_TONES[m.status] || "neutral"}>{m.status}</Pill>
+                      <Pill tone={STATUS_TONES[m.status] || "neutral"}>
+                        {memoryStatusLabel(m.status)}
+                      </Pill>
                     </td>
                     <td className="py-3 pr-5 text-right text-xs text-text-muted whitespace-nowrap">
                       {fromNow(m.updated_at)}
@@ -449,7 +473,7 @@ function FilterSelect({
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: Array<string | { value: string; label: string }>;
 }) {
   return (
     <label className="inline-flex items-center gap-1.5 text-xs">
@@ -460,11 +484,15 @@ function FilterSelect({
         onChange={(e) => onChange(e.target.value)}
         className="rounded-md border border-line bg-canvas-paper px-2 py-1 text-xs focus:border-ink-500 focus:outline-none"
       >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o || "any"}
-          </option>
-        ))}
+        {options.map((option) => {
+          const value = typeof option === "string" ? option : option.value;
+          const optionLabel = typeof option === "string" ? option || "any" : option.label;
+          return (
+            <option key={value} value={value}>
+              {optionLabel}
+            </option>
+          );
+        })}
       </select>
     </label>
   );
@@ -585,14 +613,14 @@ function MemoryDrawer({
 
   const forget = async () => {
     if (!draft) return;
-    const reason = window.prompt("Why forget this memory?", "") || "";
+    const reason = window.prompt("Why archive this memory?", "") || "";
     try {
       await api.forgetMemory(draft.id, reason, "dashboard");
-      toast.push("success", "Memory contracted");
+      toast.push("success", "Memory archived");
       onSaved();
       onClose();
     } catch (e) {
-      toast.push("error", "Forget failed", (e as Error).message);
+      toast.push("error", "Archive failed", (e as Error).message);
     }
   };
 
@@ -603,7 +631,9 @@ function MemoryDrawer({
       width="lg"
       title={draft ? `Memory ${draft.id.slice(0, 10)}…` : "Memory"}
       subtitle={
-        draft ? `${draft.kind} · ${draft.privacy} · ${draft.project_id || "global"}` : "Loading…"
+        draft
+          ? `${memoryKindLabel(draft.kind)} · ${draft.privacy} · ${draft.project_id || "global"}`
+          : "Loading…"
       }
       footer={
         draft && (
@@ -614,7 +644,7 @@ function MemoryDrawer({
               icon={<Trash2 size={12} />}
               onClick={forget}
             >
-              Forget (Contract)
+              Archive
             </Button>
             <div className="flex gap-2">
               <Button
@@ -636,7 +666,7 @@ function MemoryDrawer({
       {memQ.loading && !draft ? (
         <LoadingShimmer lines={8} />
       ) : !draft ? (
-        <Empty title="Not found" description="The memory id may have been contracted." />
+        <Empty title="Not found" description="The memory id may have been archived or removed." />
       ) : (
         <div className="space-y-6">
           <section>
@@ -650,7 +680,7 @@ function MemoryDrawer({
               className="mt-2 w-full rounded-lg border border-line bg-canvas-paper px-3 py-2 text-sm leading-6 focus:border-ink-500 focus:outline-none focus:ring-2 focus:ring-ink-500/15"
             />
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <Field label="Kind">
+              <Field label="Type">
                 <select
                   value={draft.kind}
                   onChange={(e) =>
@@ -658,9 +688,9 @@ function MemoryDrawer({
                   }
                   className="w-full rounded-md border border-line bg-canvas-paper px-2 py-1.5 text-sm"
                 >
-                  {["principle", "decision", "fact", "doc", "free"].map((k) => (
+                  {MEMORY_KIND_OPTIONS.map((k) => (
                     <option key={k} value={k}>
-                      {k}
+                      {memoryKindLabel(k)}
                     </option>
                   ))}
                 </select>
@@ -745,7 +775,9 @@ function MemoryDrawer({
                   >
                     <p className="line-clamp-2 text-text-primary">{preview(n.content, 160)}</p>
                     <div className="mt-1 flex items-center gap-2 text-[11px] text-text-muted">
-                      <Pill tone={KIND_TONES[n.kind] || "neutral"}>{n.kind}</Pill>
+                      <Pill tone={KIND_TONES[n.kind] || "neutral"}>
+                        {memoryKindLabel(n.kind)}
+                      </Pill>
                       <span className="font-mono">{n.project_id || "global"}</span>
                       {typeof n.cosine_sim === "number" && (
                         <span className="ml-auto tabular-nums">
@@ -913,15 +945,15 @@ function CreateMemoryDrawer({
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Kind">
+          <Field label="Type">
             <select
               value={kind}
               onChange={(e) => setKind(e.target.value as MemoryKind)}
               className="w-full rounded-md border border-line bg-canvas-paper px-2 py-1.5 text-sm"
             >
-              {["principle", "decision", "fact", "doc", "free"].map((k) => (
+              {MEMORY_KIND_OPTIONS.map((k) => (
                 <option key={k} value={k}>
-                  {k}
+                  {memoryKindLabel(k)}
                 </option>
               ))}
             </select>

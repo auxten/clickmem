@@ -8,6 +8,7 @@ import { Empty } from "../components/Empty";
 import { LoadingShimmer } from "../components/LoadingShimmer";
 import { useToast } from "../components/Toast";
 import { classNames, preview } from "../lib/format";
+import { MEMORY_KIND_OPTIONS, memoryKindLabel } from "../lib/labels";
 
 interface PaneState {
   query: string;
@@ -144,15 +145,15 @@ function RecallPane({
             />
           </label>
           <label className="block">
-            <span className="text-text-muted">Kind</span>
+            <span className="text-text-muted">Type</span>
             <select
               value={state.kind}
               onChange={(e) => setState({ ...state, kind: e.target.value })}
               className="mt-1 w-full rounded-md border border-line bg-canvas-paper px-2 py-1"
             >
-              {["", "principle", "decision", "fact", "doc", "free"].map((k) => (
+              {["", ...MEMORY_KIND_OPTIONS].map((k) => (
                 <option key={k} value={k}>
-                  {k || "any"}
+                  {k ? memoryKindLabel(k) : "All types"}
                 </option>
               ))}
             </select>
@@ -198,7 +199,9 @@ function RecallPane({
             <p>
               filters:{" "}
               {state.result.filters.project_id || "all projects"} ·{" "}
-              {state.result.filters.kind || "all kinds"} ·{" "}
+              {state.result.filters.kind
+                ? memoryKindLabel(state.result.filters.kind)
+                : "all types"} ·{" "}
               {state.result.filters.cross_project ? "cross-project" : "same-project"} ·{" "}
               {state.result.filters.include_confidential ? "incl. confidential" : "no confidential"}
             </p>
@@ -216,7 +219,7 @@ function RecallPane({
                 <li key={h.id} className="rounded-xl border border-line bg-canvas-paper p-4">
                   <div className="mb-2 flex items-center gap-2 text-xs">
                     <span className="font-semibold tabular-nums text-text-muted">#{idx + 1}</span>
-                    <Pill tone="kind">{h.kind}</Pill>
+                    <Pill tone="kind">{memoryKindLabel(h.kind)}</Pill>
                     <Pill tone="info">{h.privacy}</Pill>
                     <span className="font-mono text-[11px] text-text-muted">
                       {h.project_id || "global"}

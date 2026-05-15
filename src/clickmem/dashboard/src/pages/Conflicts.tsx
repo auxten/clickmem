@@ -10,6 +10,7 @@ import { LoadingShimmer } from "../components/LoadingShimmer";
 import { Pill } from "../components/Pill";
 import { useToast } from "../components/Toast";
 import { fromNow, preview } from "../lib/format";
+import { memoryKindLabel } from "../lib/labels";
 
 interface ConflictsProps {
   refreshTick: number;
@@ -138,7 +139,7 @@ function ConflictPair({
         <span className="font-mono text-xs text-text-muted">
           {pair.a.project_id || "global"}
         </span>
-        <Pill tone="kind">{pair.a.kind}</Pill>
+        <Pill tone="kind">{memoryKindLabel(pair.a.kind)}</Pill>
         <span className="text-xs text-text-muted ml-auto">
           updated {fromNow(pair.a.updated_at)}
         </span>
@@ -174,7 +175,7 @@ function ConflictPair({
           onClick={() => resolve("contract", pair.b?.id)}
           disabled={!pair.b}
         >
-          Keep A · contract B
+          Keep A · archive B
         </Button>
         <Button
           variant="secondary"
@@ -185,7 +186,7 @@ function ConflictPair({
             if (!pair.b) return;
             try {
               await api.forgetMemory(pair.a.id, "resolved conflict — keep B", "dashboard");
-              toast.push("success", "Kept B · contracted A");
+              toast.push("success", "Kept B · archived A");
               onResolved();
             } catch (e) {
               toast.push("error", "Keep B failed", (e as Error).message);
@@ -193,7 +194,7 @@ function ConflictPair({
           }}
           disabled={!pair.b}
         >
-          Keep B · contract A
+          Keep B · archive A
         </Button>
         <Button
           variant="outline"
