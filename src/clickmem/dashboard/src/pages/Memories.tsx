@@ -884,17 +884,26 @@ function CreateMemoryDrawer({
 
   const submit = async () => {
     if (!content.trim()) return;
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (!project.trim()) {
+      toast.push("error", "Project required", "Use a project id like auxten/clickmem, or type global.");
+      return;
+    }
+    if (tagList.length === 0) {
+      toast.push("error", "Tags required", "Add at least one comma-separated tag, e.g. workflow, deployment.");
+      return;
+    }
     setBusy(true);
     try {
       const res = await api.createMemory({
         content: content.trim(),
         kind,
         privacy,
-        project_id: project,
-        tags: tags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean),
+        project_id: project.trim(),
+        tags: tagList,
         pinned,
         source: initialSource || "dashboard",
         source_ref: initialRef || "",
@@ -976,7 +985,7 @@ function CreateMemoryDrawer({
               value={project}
               onChange={(e) => setProject(e.target.value)}
               className="w-full rounded-md border border-line bg-canvas-paper px-2 py-1.5 text-sm font-mono"
-              placeholder="leave blank for global"
+              placeholder="auxten/clickmem or global"
             />
           </Field>
           <Field label="Tags">
@@ -984,7 +993,7 @@ function CreateMemoryDrawer({
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               className="w-full rounded-md border border-line bg-canvas-paper px-2 py-1.5 text-sm"
-              placeholder="comma-separated"
+              placeholder="workflow, deployment"
             />
           </Field>
         </div>

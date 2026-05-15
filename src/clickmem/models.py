@@ -70,6 +70,8 @@ class Memory:
 
     content_hash: str = ""
     recall_hits: int = 0
+    pending_embedding: bool = False
+    embed_attempts: int = 0
 
     created_at: datetime = field(default_factory=_utc_now)
     updated_at: datetime = field(default_factory=_utc_now)
@@ -102,6 +104,8 @@ class Memory:
             conflict_with=list(row.get("conflict_with") or []),
             content_hash=str(row.get("content_hash", "")),
             recall_hits=int(row.get("recall_hits", 0) or 0),
+            pending_embedding=bool(row.get("pending_embedding", 0)),
+            embed_attempts=int(row.get("embed_attempts", 0) or 0),
             created_at=_parse_dt(row.get("created_at")),
             updated_at=_parse_dt(row.get("updated_at")),
         )

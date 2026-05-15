@@ -294,6 +294,7 @@ def _ingest_doc(
     results: list[dict[str, Any]] = []
     if is_agents and bullets:
         for entry in bullets:
+            entry_tags = [entry["section"]] if entry["section"] else [item.abs_path.name]
             res = memories_mod.add(
                 entry["content"],
                 kind="principle",
@@ -301,7 +302,7 @@ def _ingest_doc(
                 source_ref=f"{source_ref}#{entry['section'][:48]}",
                 project_id=project_id,
                 privacy="public",
-                tags=([entry["section"]] if entry["section"] else []),
+                tags=entry_tags,
                 agent="import_docs",
                 backend=backend,
             )
@@ -314,6 +315,7 @@ def _ingest_doc(
                 kind="doc",
                 privacy="public",
                 project_id=project_id,
+                tags=[item.abs_path.name],
                 agent="import_docs",
                 backend=backend,
             )

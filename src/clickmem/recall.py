@@ -105,7 +105,7 @@ def recall(
         return []
     vec = embed(query.strip())
 
-    where_parts = ["status = 'active'"]
+    where_parts = ["status = 'active'", "pending_embedding = 0"]
     if not include_confidential:
         where_parts.append("privacy != 'confidential'")
     if kind:
@@ -182,7 +182,7 @@ def recall_trace(
 
     vec = embed(query.strip())
 
-    where_parts = ["status = 'active'"]
+    where_parts = ["status = 'active'", "pending_embedding = 0"]
     if not include_confidential:
         where_parts.append("privacy != 'confidential'")
     if kind:

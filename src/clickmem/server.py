@@ -52,7 +52,7 @@ class MemoryCreate(BaseModel):
     kind: str = "free"
     source: str = "agent_remember"
     source_ref: str = ""
-    project_id: str = ""
+    project_id: Optional[str] = None
     privacy: str = "private"
     tags: List[str] = Field(default_factory=list)
     pinned: bool = False
@@ -157,6 +157,8 @@ def create_app() -> FastAPI:
     _local_or_remote.mark_in_server_process()
 
     app = FastAPI(title="ClickMem", version=__version__, default_response_class=JSONResponse)
+    app.state.memory_worker_event = asyncio.Event()
+    app.state.memory_worker_task = None
 
     app.add_middleware(
         CORSMiddleware,
@@ -167,6 +169,50 @@ def create_app() -> FastAPI:
     )
 
     auth = _auth_dependency()
+
+    async def _memory_embedding_worker() -> None:
+        """Drain queued memory embeddings without keeping write clients waiting."""
+        event: asyncio.Event = app.state.memory_worker_event
+        event.set()  # Process rows left pending before a restart.
+        while True:
+            try:
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+                event.clear()
+
+                while True:
+                    result = await asyncio.to_thread(memories_mod.process_pending_embeddings, 32)
+                    if int(result.get("processed", 0) or 0) == 0:
+                        break
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                _log.exception("memory embedding worker failed: %s", e)
+                await asyncio.sleep(1.0)
+
+    def _kick_memory_worker() -> None:
+        try:
+            app.state.memory_worker_event.set()
+        except Exception as e:  # noqa: BLE001
+            _log.debug("failed to signal memory embedding worker: %s", e)
+
+    @app.on_event("startup")
+    async def _start_memory_embedding_worker() -> None:
+        app.state.memory_worker_task = asyncio.create_task(_memory_embedding_worker())
+
+    @app.on_event("shutdown")
+    async def _stop_memory_embedding_worker() -> None:
+        task = app.state.memory_worker_task
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     # ---------- Health ----------------------------------------------------
 
@@ -258,19 +304,25 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/memories", dependencies=[Depends(auth)])
     async def memories_create(body: MemoryCreate):
-        return await asyncio.to_thread(
-            memories_mod.add,
-            body.content,
-            kind=body.kind,
-            source=body.source,
-            source_ref=body.source_ref,
-            project_id=body.project_id,
-            privacy=body.privacy,
-            tags=body.tags,
-            pinned=body.pinned,
-            revises_id=body.revises_id,
-            agent=body.agent,
-        )
+        try:
+            result = await asyncio.to_thread(
+                memories_mod.queue_add,
+                body.content,
+                kind=body.kind,
+                source=body.source,
+                source_ref=body.source_ref,
+                project_id=body.project_id,
+                privacy=body.privacy,
+                tags=body.tags,
+                pinned=body.pinned,
+                revises_id=body.revises_id,
+                agent=body.agent,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if result.get("status") == "queued":
+            _kick_memory_worker()
+        return result
 
     @app.post("/v1/memories/bulk", dependencies=[Depends(auth)])
     async def memories_bulk(body: MemoryBulkRequest):
@@ -291,18 +343,21 @@ def create_app() -> FastAPI:
 
     @app.patch("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
     async def memories_patch(memory_id: str, body: MemoryPatch):
-        return await asyncio.to_thread(
-            memories_mod.edit,
-            memory_id,
-            content=body.content,
-            kind=body.kind,
-            privacy=body.privacy,
-            project_id=body.project_id,
-            tags=body.tags,
-            pinned=body.pinned,
-            revises_id=body.revises_id,
-            agent=body.agent,
-        )
+        try:
+            return await asyncio.to_thread(
+                memories_mod.edit,
+                memory_id,
+                content=body.content,
+                kind=body.kind,
+                privacy=body.privacy,
+                project_id=body.project_id,
+                tags=body.tags,
+                pinned=body.pinned,
+                revises_id=body.revises_id,
+                agent=body.agent,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.delete("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
     async def memories_delete(memory_id: str, reason: str = "", agent: str = ""):

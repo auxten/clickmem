@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import uuid
 from typing import Any, Iterable, List
 
 from clickmem.backend import Backend, get_backend
 from clickmem.blacklist import enforce_on_insert
 from clickmem.conflicts import ConflictResult, check_on_commit, _mark_conflicted
-from clickmem.embedding import embed
+from clickmem.embedding import embed, embed_batch
 from clickmem.events import write as event_write
 from clickmem.history import append as history_append
 from clickmem.models import (
@@ -34,6 +35,8 @@ from clickmem.sqlutil import (
 
 
 _log = logging.getLogger(__name__)
+_PROCESS_PENDING_LOCK = threading.Lock()
+GLOBAL_PROJECT_SENTINEL = "global"
 
 
 def _new_id() -> str:
@@ -59,12 +62,44 @@ def _coerce_status(s: str | None) -> str:
     return v if v in VALID_STATUS else "active"
 
 
+def _metadata_error() -> str:
+    return (
+        "Memory writes require explicit scope and tags. Choose one scope: "
+        "project_id='owner/repo' (for project memory) or project_id='global' "
+        "(for global memory). Provide at least one tag. Examples: "
+        "--project owner/repo --tag workflow, or --global --tag security. "
+        "clickmem remember 'Use mini as deploy target' --project auxten/clickmem "
+        "--tag workflow --tag deployment; "
+        "clickmem remember 'Never log API keys' --global --tag security."
+    )
+
+
+def _normalise_write_project_id(project_id: str | None) -> str:
+    raw = (project_id or "").strip()
+    if not raw:
+        raise ValueError(_metadata_error())
+    if raw.lower() in (GLOBAL_PROJECT_SENTINEL, "__global__"):
+        return ""
+    return raw
+
+
+def _normalise_write_tags(tags: Iterable[str] | None) -> list[str]:
+    out = [str(t).strip() for t in (tags or []) if str(t).strip()]
+    if not out:
+        raise ValueError(_metadata_error())
+    return out
+
+
+def _validate_write_metadata(project_id: str | None, tags: Iterable[str] | None) -> tuple[str, list[str]]:
+    return _normalise_write_project_id(project_id), _normalise_write_tags(tags)
+
+
 def _insert(memory: Memory, backend: Backend) -> None:
     sql = (
         "INSERT INTO memories ("
         "id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "status, pinned, contract_reason, revises_id, conflict_with, "
-        "content_hash, recall_hits, created_at, updated_at"
+        "content_hash, recall_hits, pending_embedding, embed_attempts, created_at, updated_at"
         ") VALUES ("
         f"{quote_str(memory.id)}, {quote_str(memory.content)}, {quote_str(memory.kind)}, "
         f"{quote_str(memory.source)}, {quote_str(memory.source_ref)}, "
@@ -73,7 +108,8 @@ def _insert(memory: Memory, backend: Backend) -> None:
         f"{quote_str(memory.status)}, {quote_bool(memory.pinned)}, "
         f"{quote_str(memory.contract_reason)}, {quote_str(memory.revises_id)}, "
         f"{quote_array_str(memory.conflict_with)}, {quote_str(memory.content_hash)}, "
-        f"{int(memory.recall_hits)}, {utc_now_sql()}, {utc_now_sql()}"
+        f"{int(memory.recall_hits)}, {quote_bool(memory.pending_embedding)}, "
+        f"{int(memory.embed_attempts)}, {utc_now_sql()}, {utc_now_sql()}"
         ")"
     )
     backend.execute(sql)
@@ -86,19 +122,23 @@ def _set_status(
     contract_reason: str = "",
     clear_conflict_with: bool = False,
     pinned: bool | None = None,
+    pending_embedding: bool | None = None,
+    embed_attempts: int | None = None,
 ) -> None:
     """Re-insert the latest version of a row with status/pinned changes."""
     cwith = "[]" if clear_conflict_with else "conflict_with"
     pinned_expr = quote_bool(pinned) if pinned is not None else "pinned"
+    pending_expr = quote_bool(pending_embedding) if pending_embedding is not None else "pending_embedding"
+    attempts_expr = str(int(embed_attempts)) if embed_attempts is not None else "embed_attempts"
     cr = quote_str(contract_reason) if contract_reason else "contract_reason"
     sql = (
         "INSERT INTO memories "
         "(id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
-        "recall_hits, created_at, updated_at) "
+        "recall_hits, pending_embedding, embed_attempts, created_at, updated_at) "
         "SELECT id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         f"{quote_str(new_status)}, {pinned_expr}, {cr}, revises_id, {cwith}, content_hash, "
-        f"recall_hits, created_at, {utc_now_sql()} "
+        f"recall_hits, {pending_expr}, {attempts_expr}, created_at, {utc_now_sql()} "
         f"FROM memories FINAL WHERE id = {quote_str(memory_id)}"
     )
     backend.execute(sql)
@@ -107,7 +147,8 @@ def _set_status(
 _SELECT = (
     "id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
     "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
-    "recall_hits, toString(created_at) AS created_at, toString(updated_at) AS updated_at"
+    "recall_hits, pending_embedding, embed_attempts, "
+    "toString(created_at) AS created_at, toString(updated_at) AS updated_at"
 )
 
 
@@ -143,6 +184,7 @@ def add(
     if not content or not content.strip():
         raise ValueError("memory content cannot be empty")
     content = content.strip()
+    project_id, tag_list = _validate_write_metadata(project_id, tags)
 
     bl = enforce_on_insert(content, project_id=project_id, backend=backend)
     if bl is not None:
@@ -168,9 +210,9 @@ def add(
         kind=_coerce_kind(kind),
         source=source or "agent_remember",
         source_ref=source_ref or "",
-        project_id=project_id or "",
+        project_id=project_id,
         privacy=_coerce_privacy(privacy),
-        tags=list(tags or []),
+        tags=tag_list,
         embedding=embedding,
         status="active",
         pinned=bool(pinned),
@@ -274,6 +316,254 @@ def add(
     }
 
 
+def queue_add(
+    content: str,
+    *,
+    kind: str = "free",
+    source: str = "agent_remember",
+    source_ref: str = "",
+    project_id: str = "",
+    privacy: str = "private",
+    tags: Iterable[str] | None = None,
+    pinned: bool = False,
+    revises_id: str = "",
+    agent: str = "",
+    backend: Backend | None = None,
+) -> dict[str, Any]:
+    """Queue an Expand without embedding on the request path.
+
+    The row is durable immediately with ``pending_embedding=1``. A background
+    worker later batches embedding generation, conflict detection, and the final
+    active/merged/conflicted state transition.
+    """
+    backend = backend or get_backend()
+    if not content or not content.strip():
+        raise ValueError("memory content cannot be empty")
+    content = content.strip()
+    project_id, tag_list = _validate_write_metadata(project_id, tags)
+
+    bl = enforce_on_insert(content, project_id=project_id, backend=backend)
+    if bl is not None:
+        event_write(
+            "blacklist.hit",
+            agent=agent,
+            project_id=project_id,
+            message=f"blocked Expand: {bl.pattern}",
+            payload={"pattern": bl.pattern, "scope": bl.scope},
+            backend=backend,
+        )
+        return {
+            "status": "refused",
+            "id": "",
+            "peer_ids": [],
+            "message": f"matched blacklist pattern {bl.pattern!r}",
+        }
+
+    candidate = Memory(
+        id=_new_id(),
+        content=content,
+        kind=_coerce_kind(kind),
+        source=source or "agent_remember",
+        source_ref=source_ref or "",
+        project_id=project_id,
+        privacy=_coerce_privacy(privacy),
+        tags=tag_list,
+        embedding=[],
+        status="active",
+        pinned=bool(pinned),
+        revises_id=revises_id or "",
+        content_hash=_hash_content(content),
+        pending_embedding=True,
+        embed_attempts=0,
+    )
+    _insert(candidate, backend)
+    history_append(
+        candidate.id,
+        op="expand",
+        content=content,
+        edited_by=agent or source,
+        note="queued for embedding",
+        backend=backend,
+    )
+    event_write(
+        "memory.expand.queued",
+        agent=agent,
+        project_id=candidate.project_id,
+        memory_id=candidate.id,
+        message="memory queued for embedding",
+        backend=backend,
+    )
+    return {
+        "status": "queued",
+        "id": candidate.id,
+        "peer_ids": [],
+        "message": "memory queued for embedding",
+    }
+
+
+def _pending_batch(limit: int, backend: Backend) -> list[Memory]:
+    rows = backend.query(
+        f"SELECT {_SELECT} FROM memories FINAL "
+        "WHERE pending_embedding = 1 AND status = 'active' "
+        "ORDER BY created_at ASC "
+        f"LIMIT {int(limit)}"
+    )
+    return [Memory.from_row(r) for r in rows]
+
+
+def _mark_embedding_failed(memory: Memory, error: Exception, backend: Backend) -> None:
+    attempts = int(memory.embed_attempts or 0) + 1
+    _set_status(
+        memory.id,
+        "embedding_failed",
+        backend=backend,
+        contract_reason=str(error)[:500],
+        clear_conflict_with=True,
+        pending_embedding=False,
+        embed_attempts=attempts,
+    )
+    event_write(
+        "memory.embedding_failed",
+        agent="worker",
+        project_id=memory.project_id,
+        memory_id=memory.id,
+        message=str(error)[:500],
+        payload={"attempts": attempts},
+        backend=backend,
+    )
+
+
+def _finalize_embedded(memory: Memory, vector: list[float], backend: Backend) -> str:
+    memory.embedding = vector
+    memory.pending_embedding = False
+    memory.embed_attempts = int(memory.embed_attempts or 0) + 1
+    memory.content_hash = _hash_content(memory.content)
+
+    conflict = check_on_commit(memory, backend=backend)
+
+    if conflict.status == "merged":
+        _set_status(
+            memory.id,
+            "contracted",
+            backend=backend,
+            contract_reason=f"merged into {conflict.id}",
+            clear_conflict_with=True,
+            pending_embedding=False,
+            embed_attempts=memory.embed_attempts,
+        )
+        history_append(
+            conflict.id,
+            op="expand",
+            content=memory.content,
+            edited_by=memory.source,
+            note=f"merged duplicate from queued memory {memory.id}",
+            backend=backend,
+        )
+        event_write(
+            "memory.expand",
+            agent=memory.source,
+            project_id=memory.project_id,
+            memory_id=conflict.id,
+            message="merged into existing memory",
+            payload={"status": "merged", "queued_id": memory.id},
+            backend=backend,
+        )
+        return "merged"
+
+    if conflict.status == "rejected":
+        _set_status(
+            memory.id,
+            "contracted",
+            backend=backend,
+            contract_reason=conflict.message or "rejected by pinned conflict",
+            clear_conflict_with=True,
+            pending_embedding=False,
+            embed_attempts=memory.embed_attempts,
+        )
+        event_write(
+            "memory.expand",
+            agent=memory.source,
+            project_id=memory.project_id,
+            memory_id=memory.id,
+            message="rejected by pinned conflict",
+            payload={"peer_ids": conflict.peer_ids, "status": "rejected"},
+            backend=backend,
+        )
+        return "rejected"
+
+    if conflict.status == "conflicted":
+        memory.status = "conflicted"
+        memory.conflict_with = list(conflict.peer_ids or [])
+
+    _insert(memory, backend)
+
+    if conflict.status == "conflicted":
+        _mark_conflicted(memory.id, conflict.peer_ids or [], backend)
+        for peer in conflict.peer_ids or []:
+            _mark_conflicted(peer, [memory.id], backend)
+        event_write(
+            "memory.expand",
+            agent=memory.source,
+            project_id=memory.project_id,
+            memory_id=memory.id,
+            message="conflict surfaced",
+            payload={"peer_ids": conflict.peer_ids, "status": "conflicted"},
+            backend=backend,
+        )
+        return "conflicted"
+
+    event_write(
+        "memory.expand",
+        agent=memory.source,
+        project_id=memory.project_id,
+        memory_id=memory.id,
+        message="memory added",
+        backend=backend,
+    )
+    return "added"
+
+
+def process_pending_embeddings(limit: int = 32, backend: Backend | None = None) -> dict[str, Any]:
+    """Process queued memories in a bounded batch.
+
+    This is the worker entry point used by the HTTP server and by tests. It is
+    intentionally synchronous so the FastAPI layer can run it via
+    ``asyncio.to_thread`` without blocking the event loop.
+    """
+    backend = backend or get_backend()
+    if not _PROCESS_PENDING_LOCK.acquire(blocking=False):
+        return {"processed": 0, "skipped": "already_running"}
+    try:
+        batch = _pending_batch(limit, backend)
+        if not batch:
+            return {"processed": 0, "results": {}}
+
+        results: dict[str, int] = {}
+        try:
+            vectors = embed_batch([m.content for m in batch])
+        except Exception as e:  # noqa: BLE001
+            for memory in batch:
+                _mark_embedding_failed(memory, e, backend)
+            return {
+                "processed": len(batch),
+                "failed": len(batch),
+                "error": str(e),
+            }
+
+        for memory, vector in zip(batch, vectors):
+            try:
+                status = _finalize_embedded(memory, vector, backend)
+            except Exception as e:  # noqa: BLE001
+                _log.exception("failed to finalize queued memory %s", memory.id)
+                _mark_embedding_failed(memory, e, backend)
+                status = "failed"
+            results[status] = results.get(status, 0) + 1
+
+        return {"processed": len(batch), "results": results}
+    finally:
+        _PROCESS_PENDING_LOCK.release()
+
+
 def edit(
     memory_id: str,
     *,
@@ -300,9 +590,9 @@ def edit(
     if privacy is not None:
         existing.privacy = _coerce_privacy(privacy)
     if project_id is not None:
-        existing.project_id = project_id
+        existing.project_id = _normalise_write_project_id(project_id)
     if tags is not None:
-        existing.tags = list(tags)
+        existing.tags = _normalise_write_tags(tags)
     if pinned is not None:
         existing.pinned = bool(pinned)
     if revises_id is not None:
@@ -312,6 +602,8 @@ def edit(
     existing.conflict_with = []
     existing.content_hash = _hash_content(existing.content)
     existing.embedding = embed(existing.content)
+    existing.pending_embedding = False
+    existing.embed_attempts = int(existing.embed_attempts or 0) + 1
 
     bl = enforce_on_insert(existing.content, project_id=existing.project_id, backend=backend)
     if bl is not None:

@@ -11,7 +11,7 @@ from clickmem.models import Project
 
 def test_detect_from_cwd_outside_git(tmp_path, backend):
     project = projects.detect_from_cwd(tmp_path)
-    assert project.id
+    assert project.id == tmp_path.name.lower()
     assert project.name == tmp_path.name
     assert project.repo_url.startswith("file://")
 
@@ -29,7 +29,13 @@ def test_detect_from_cwd_uses_git_remote(tmp_path, backend, monkeypatch):
     )
     project = projects.detect_from_cwd(repo)
     assert project.repo_url == "https://github.com/auxten/example"
-    assert project.id == projects.project_id_for(project.repo_url, project.name)
+    assert project.id == "auxten/example"
+
+
+def test_project_id_for_uses_readable_repo_slug():
+    assert projects.project_id_for("https://github.com/auxten/clickmem") == "auxten/clickmem"
+    assert projects.project_id_for("git@github.com:auxten/clickmem.git") == "auxten/clickmem"
+    assert projects.project_id_for("", "ClickMem") == "clickmem"
 
 
 def test_upsert_and_get(backend):

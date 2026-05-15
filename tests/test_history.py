@@ -7,14 +7,14 @@ from clickmem.history import diff, get_history, history_with_diffs
 
 
 def test_expand_creates_v1(backend):
-    res = memories.add("v1 contents", project_id="p1")
+    res = memories.add("v1 contents", project_id="p1", tags=["test"])
     hist = get_history(res["id"])
     assert [h.version for h in hist] == [1]
     assert hist[0].op == "expand"
 
 
 def test_revise_chain(backend):
-    res = memories.add("v1 contents", project_id="p1")
+    res = memories.add("v1 contents", project_id="p1", tags=["test"])
     memories.edit(res["id"], content="v2 contents")
     memories.edit(res["id"], content="v3 contents")
 
@@ -28,7 +28,7 @@ def test_revise_chain(backend):
 
 
 def test_contract_and_pin_append_history(backend):
-    res = memories.add("history-rich", project_id="p1")
+    res = memories.add("history-rich", project_id="p1", tags=["test"])
     memories.pin(res["id"])
     memories.forget(res["id"], reason="done")
 
@@ -37,7 +37,7 @@ def test_contract_and_pin_append_history(backend):
 
 
 def test_history_with_diffs_emits_unified_diff(backend):
-    res = memories.add("alpha\nbravo", project_id="p1")
+    res = memories.add("alpha\nbravo", project_id="p1", tags=["test"])
     memories.edit(res["id"], content="alpha\ncharlie")
     out = history_with_diffs(res["id"])
     assert len(out) == 2

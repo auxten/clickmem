@@ -126,3 +126,7 @@ def set_embedder(engine) -> None:
 
 def embed(text: str) -> List[float]:
     return get_embedder().encode(text)
+
+
+def embed_batch(texts: Sequence[str]) -> List[List[float]]:
+    return get_embedder().encode_batch(texts)

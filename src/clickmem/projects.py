@@ -8,7 +8,6 @@ to surface memories from another project the caller must either pass
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
@@ -16,6 +15,7 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from clickmem.backend import Backend, get_backend
 from clickmem.embedding import embed
@@ -50,11 +50,36 @@ def _normalise_repo_url(url: str) -> str:
     return url
 
 
+_PROJECT_ID_SAFE_RE = re.compile(r"[^a-z0-9._/-]+")
+
+
+def _clean_project_id(value: str) -> str:
+    value = _PROJECT_ID_SAFE_RE.sub("-", (value or "").strip().lower())
+    value = re.sub(r"-+", "-", value)
+    value = re.sub(r"/+", "/", value)
+    return value.strip("-/")
+
+
 def project_id_for(repo_url: str, name: str = "") -> str:
-    key = repo_url or name or ""
-    if not key:
-        return ""
-    return hashlib.sha1(key.lower().encode("utf-8")).hexdigest()[:16]
+    """Return a stable, human-readable project id.
+
+    Remote repositories use the familiar ``owner/repo`` slug. Repos without a
+    useful owner path fall back to their detected name or final URL segment.
+    """
+    repo_url = _normalise_repo_url(repo_url)
+    if repo_url.startswith("file://"):
+        return _clean_project_id(name or Path(repo_url[7:]).name)
+
+    if repo_url:
+        parsed = urlparse(repo_url)
+        path = parsed.path.strip("/")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 2:
+            return _clean_project_id("/".join(parts[-2:]))
+        if parts:
+            return _clean_project_id(name or parts[-1])
+
+    return _clean_project_id(name)
 
 
 def detect_from_cwd(cwd: Optional[Path] = None) -> Project:

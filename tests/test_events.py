@@ -11,13 +11,13 @@ def _kinds(rows):
 
 
 def test_expand_writes_event(backend):
-    memories.add("event-row-1", project_id="p1")
+    memories.add("event-row-1", project_id="p1", tags=["test"])
     rows = list_events(limit=50)
     assert "memory.expand" in _kinds(rows)
 
 
 def test_contract_and_pin_write_events(backend):
-    res = memories.add("event-row-2", project_id="p1")
+    res = memories.add("event-row-2", project_id="p1", tags=["test"])
     memories.pin(res["id"])
     memories.forget(res["id"], reason="done")
     rows = list_events(limit=50)
@@ -38,8 +38,8 @@ def test_write_with_payload(backend):
 
 
 def test_activity_counts_groups(backend):
-    memories.add("a", project_id="p1", privacy="public")
-    memories.add("b", project_id="p1", privacy="public")
+    memories.add("a", project_id="p1", privacy="public", tags=["test"])
+    memories.add("b", project_id="p1", privacy="public", tags=["test"])
     rows = activity_counts(hours=24, bucket_minutes=60)
     assert isinstance(rows, list)
     # at least one bucket with >= 2 events

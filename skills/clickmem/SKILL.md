@@ -22,7 +22,7 @@ metadata:
 
 ClickMem is a *belief-revision* memory store. Memories enter only when the agent (or the user) deliberately commits one. There is **no auto-extraction**, no LLM in the server loop, no automatic context injection. You read and write through MCP tools or the `clickmem` CLI; both expose the same operations and back the same chDB (or ClickHouse Cloud) store on `http://127.0.0.1:9527`.
 
-All CLI commands support `--json` for structured output. Project and privacy scope are detected from cwd unless overridden.
+All memory writes must carry explicit management metadata: either a concrete `project_id` such as `auxten/clickmem` or the literal `global`, plus at least one tag. Project and privacy scope are never guessed on write; recall still defaults to the current project + global unless overridden.
 
 ---
 
@@ -36,6 +36,21 @@ All CLI commands support `--json` for structured output. Project and privacy sco
 - A doc the user wants permanent ("AGENTS.md bullet about commit style")
 
 **Don't** call it after every chat turn. ClickMem is not a transcript dump — the Stop hook already lands raw transcripts in cold storage. Only commit refined memories.
+
+When you remember something, always pass:
+
+- `project_id`: a readable project slug such as `auxten/clickmem`, or `global` for cross-project principles.
+- `tags`: at least one short management/search tag, e.g. `workflow`, `deployment`, `security`, `hooks`.
+
+Examples:
+
+```bash
+clickmem remember "Use mini as the persistent ClickMem server; local is client-only." \
+  --project auxten/clickmem --tag workflow --tag deployment --kind principle
+
+clickmem remember "Never log raw API keys." \
+  --global --tag security --kind principle
+```
 
 ---
 
@@ -88,7 +103,8 @@ Pinned memories short-circuit conflict surfacing: a new commit that conflicts wi
 
 ## Project + privacy partitioning
 
-- `project_id` is frozen on the memory at commit time, detected from cwd → git remote.
+- `project_id` is frozen on the memory at commit time. Writes require an explicit readable project id (`owner/repo`) or explicit `global`.
+- `tags` are required on writes; use them to make operational memories browseable and auditable.
 - Recall scoring: same-project ×1.0, global (`project_id=''`) ×0.9, other-project ×0.0 by default.
 - `privacy` is a separate dimension: `public`, `private` (default), `confidential`.
 - `confidential` memories are excluded from MCP responses unless the caller passes `privacy_ack=true` — only do this if the user explicitly asks for confidential context.
@@ -106,7 +122,7 @@ clickmem hooks install                # installs hooks for every detected agent
 
 # Day-to-day
 clickmem recall "deploy pipeline"
-clickmem remember "Use uv for Python venv management on this repo" --kind principle
+clickmem remember "Use uv for Python venv management on this repo" --project auxten/clickmem --tag tooling --kind principle
 clickmem conflicts                     # any unresolved pairs?
 clickmem show <id> --history           # how did this memory evolve?
 

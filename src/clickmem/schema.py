@@ -21,9 +21,16 @@ from typing import List
 DEFAULT_EMBED_DIM = 256
 
 
-def memories_ddl(embed_dim: int = DEFAULT_EMBED_DIM) -> str:
+MEMORIES_COLUMNS = (
+    "id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
+    "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
+    "recall_hits, pending_embedding, embed_attempts, created_at, updated_at"
+)
+
+
+def memories_ddl(embed_dim: int = DEFAULT_EMBED_DIM, table: str = "memories") -> str:
     return f"""
-    CREATE TABLE IF NOT EXISTS memories (
+    CREATE TABLE IF NOT EXISTS {table} (
         id              String,
         content         String,
         kind            LowCardinality(String),
@@ -50,7 +57,7 @@ def memories_ddl(embed_dim: int = DEFAULT_EMBED_DIM) -> str:
         updated_at      DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
     )
     ENGINE = ReplacingMergeTree(updated_at)
-    ORDER BY (project_id, kind, id)
+    ORDER BY id
     """.strip()
 
 
@@ -63,6 +70,27 @@ def memories_alter_for_async_embed() -> List[str]:
     return [
         "ALTER TABLE memories ADD COLUMN IF NOT EXISTS pending_embedding UInt8 DEFAULT 0",
         "ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_attempts UInt8 DEFAULT 0",
+    ]
+
+
+def memories_rekey_to_id_statements(embed_dim: int = DEFAULT_EMBED_DIM) -> List[str]:
+    """Rebuild old memories tables whose replacing key included mutable fields.
+
+    Earlier builds used ``ORDER BY (project_id, kind, id)``. Editing
+    ``project_id`` or ``kind`` then produced two live rows with the same id,
+    because ReplacingMergeTree only deduplicates within the sorting key. The
+    replacement table keeps ``id`` as the only replacing key, while copying
+    ``FINAL`` rows from the old table so pre-existing duplicate ids collapse
+    under the new key.
+    """
+    tmp = "memories__id_order_tmp"
+    backup = "memories__project_kind_id_backup"
+    return [
+        f"DROP TABLE IF EXISTS {tmp}",
+        memories_ddl(embed_dim, table=tmp),
+        f"INSERT INTO {tmp} ({MEMORIES_COLUMNS}) SELECT {MEMORIES_COLUMNS} FROM memories FINAL",
+        f"DROP TABLE IF EXISTS {backup}",
+        f"RENAME TABLE memories TO {backup}, {tmp} TO memories",
     ]
 
 
@@ -157,6 +185,7 @@ def bootstrap_statements(embed_dim: int = DEFAULT_EMBED_DIM) -> List[str]:
     """Ordered list of DDL statements to run on a fresh backend."""
     return [
         memories_ddl(embed_dim),
+        *memories_alter_for_async_embed(),
         memory_history_ddl(),
         projects_ddl(embed_dim),
         blacklist_ddl(),

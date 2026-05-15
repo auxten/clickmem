@@ -12,8 +12,8 @@ from clickmem.backend import reset_backend
 
 
 def _seed():
-    a = memories.add("alpha export row", project_id="p1", privacy="public")["id"]
-    b = memories.add("bravo export row", project_id="p2", privacy="private")["id"]
+    a = memories.add("alpha export row", project_id="p1", privacy="public", tags=["test"])["id"]
+    b = memories.add("bravo export row", project_id="p2", privacy="private", tags=["test"])["id"]
     return a, b
 
 

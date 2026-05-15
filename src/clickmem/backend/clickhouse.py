@@ -14,7 +14,7 @@ import logging
 from typing import Any, List
 from urllib.parse import urlparse
 
-from clickmem.schema import ann_index_statements, bootstrap_statements
+from clickmem.schema import ann_index_statements, bootstrap_statements, memories_rekey_to_id_statements
 from clickmem.sqlutil import quote_array_float
 
 
@@ -73,6 +73,23 @@ class ClickHouseBackend:
 
     def _bootstrap(self) -> None:
         for stmt in bootstrap_statements(self.embed_dim):
+            self.execute(stmt)
+        self._migrate_memories_sorting_key()
+
+    def _migrate_memories_sorting_key(self) -> None:
+        try:
+            rows = self.query(
+                "SELECT sorting_key FROM system.tables "
+                f"WHERE database = currentDatabase() AND name = 'memories' LIMIT 1"
+            )
+            sorting_key = str(rows[0].get("sorting_key", "") if rows else "").replace("`", "").replace(" ", "")
+        except Exception as e:  # noqa: BLE001
+            _log.warning("could not inspect memories sorting key: %s", e)
+            return
+        if sorting_key in ("", "id"):
+            return
+        _log.warning("migrating memories sorting key from %s to id", sorting_key)
+        for stmt in memories_rekey_to_id_statements(self.embed_dim):
             self.execute(stmt)
 
     def query(self, sql: str) -> List[dict[str, Any]]:

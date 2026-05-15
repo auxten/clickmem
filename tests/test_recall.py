@@ -7,9 +7,9 @@ from clickmem.recall import recall, recall_trace
 
 
 def test_same_project_beats_global_and_other_project(backend):
-    same = memories.add("alpha bravo charlie", project_id="p1", privacy="public")["id"]
-    glob = memories.add("alpha bravo charlie", project_id="", privacy="public")["id"]
-    other = memories.add("alpha bravo charlie", project_id="p2", privacy="public")["id"]
+    same = memories.add("alpha bravo charlie", project_id="p1", privacy="public", tags=["test"])["id"]
+    glob = memories.add("alpha bravo charlie", project_id="global", privacy="public", tags=["test"])["id"]
+    other = memories.add("alpha bravo charlie", project_id="p2", privacy="public", tags=["test"])["id"]
 
     hits = recall("alpha bravo charlie", project_id="p1", limit=5)
     ids = [h.id for h in hits]
@@ -26,8 +26,8 @@ def test_same_project_beats_global_and_other_project(backend):
 
 
 def test_cross_project_includes_other_project(backend):
-    memories.add("zeta payload one", project_id="p1", privacy="public")
-    memories.add("zeta payload two", project_id="p2", privacy="public")
+    memories.add("zeta payload one", project_id="p1", privacy="public", tags=["test"])
+    memories.add("zeta payload two", project_id="p2", privacy="public", tags=["test"])
 
     hits = recall("zeta payload", project_id="p1", cross_project=True, limit=10)
     pids = {h.project_id for h in hits}
@@ -35,8 +35,8 @@ def test_cross_project_includes_other_project(backend):
 
 
 def test_privacy_filter_blocks_confidential_by_default(backend):
-    pub = memories.add("nonsecret message body", project_id="p1", privacy="public")["id"]
-    conf = memories.add("secret confidential message body", project_id="p1", privacy="confidential")["id"]
+    pub = memories.add("nonsecret message body", project_id="p1", privacy="public", tags=["test"])["id"]
+    conf = memories.add("secret confidential message body", project_id="p1", privacy="confidential", tags=["test"])["id"]
     assert pub != conf
 
     hits = recall("nonsecret message body", project_id="p1", limit=10)
@@ -52,7 +52,7 @@ def test_privacy_filter_blocks_confidential_by_default(backend):
 def test_blacklist_filter_drops_hits(backend):
     from clickmem import blacklist as bl
 
-    mid = memories.add("forbidden topic discussion", project_id="p1", privacy="public")["id"]
+    mid = memories.add("forbidden topic discussion", project_id="p1", privacy="public", tags=["test"])["id"]
     bl.add("forbidden topic", scope="global", reason="testing")
 
     hits = recall("forbidden topic discussion", project_id="p1", limit=10)
@@ -60,8 +60,8 @@ def test_blacklist_filter_drops_hits(backend):
 
 
 def test_pinned_short_circuits_to_top(backend):
-    a = memories.add("ranking probe alpha", project_id="p1", privacy="public")["id"]
-    b = memories.add("ranking probe beta", project_id="p1", privacy="public")["id"]
+    a = memories.add("ranking probe alpha", project_id="p1", privacy="public", tags=["test"])["id"]
+    b = memories.add("ranking probe beta", project_id="p1", privacy="public", tags=["test"])["id"]
     memories.pin(b)
 
     hits = recall("ranking probe alpha", project_id="p1", limit=5)
@@ -71,8 +71,8 @@ def test_pinned_short_circuits_to_top(backend):
 
 
 def test_recall_trace_breakdown(backend):
-    a = memories.add("alpha source one", project_id="p1", privacy="public")["id"]
-    b = memories.add("alpha source two", project_id="p2", privacy="public")["id"]
+    a = memories.add("alpha source one", project_id="p1", privacy="public", tags=["test"])["id"]
+    b = memories.add("alpha source two", project_id="p2", privacy="public", tags=["test"])["id"]
 
     trace = recall_trace("alpha source", project_id="p1", cross_project=False, limit=5)
     assert trace["query"] == "alpha source"
@@ -90,6 +90,6 @@ def test_recall_trace_breakdown(backend):
 
 
 def test_recall_empty_query_returns_empty(backend):
-    memories.add("anything", project_id="p1")
+    memories.add("anything", project_id="p1", tags=["test"])
     assert recall("", project_id="p1") == []
     assert recall("   ", project_id="p1") == []

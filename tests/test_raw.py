@@ -35,6 +35,6 @@ def test_raw_never_surfaces_in_recall(backend):
     hits = recall("this is raw text only", project_id="", limit=5, cross_project=True)
     assert hits == []
     # Add a real memory so we can confirm recall does see memories table.
-    memories.add("this is a real memory entry", project_id="p1", privacy="public")
+    memories.add("this is a real memory entry", project_id="p1", privacy="public", tags=["test"])
     hits = recall("real memory entry", project_id="p1", limit=5)
     assert any("real memory" in h.content for h in hits)

@@ -603,7 +603,16 @@ def t1_5_mcp_stdio(*, keep: bool = False) -> CheckResult:
             # MCP stdio process will load the real embedder lazily when remember
             # is called. We still cap per-call timeout at 60s.
             tool_calls: list[tuple[str, dict]] = [
-                ("clickmem_remember", {"content": "audit MCP wire probe", "kind": "free", "privacy": "public"}),
+                (
+                    "clickmem_remember",
+                    {
+                        "content": "audit MCP wire probe",
+                        "kind": "free",
+                        "project_id": "global",
+                        "privacy": "public",
+                        "tags": ["audit", "mcp"],
+                    },
+                ),
                 ("clickmem_list", {"limit": 5}),
                 ("clickmem_recall", {"query": "audit MCP wire probe", "limit": 3}),
                 ("clickmem_show", {"memory_id": "no-such-id"}),

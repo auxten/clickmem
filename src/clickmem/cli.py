@@ -40,6 +40,17 @@ app = typer.Typer(
 )
 console = Console()
 
+_MEMORY_METADATA_HELP = (
+    "Memory writes require explicit scope and tags.\n"
+    "Choose exactly one scope:\n"
+    "  --project owner/repo    project-scoped memory, e.g. --project auxten/clickmem\n"
+    "  --global                global memory shared across projects\n"
+    "Add at least one --tag.\n"
+    "Examples:\n"
+    "  clickmem remember \"Use mini as deploy target\" --project auxten/clickmem --tag workflow --tag deployment\n"
+    "  clickmem remember \"Never log API keys\" --global --tag security"
+)
+
 
 def _print(value, raw_json: bool = False) -> None:
     if raw_json:
@@ -51,6 +62,22 @@ def _print(value, raw_json: bool = False) -> None:
         console.print(value)
 
 
+def _resolve_memory_scope(project_id: Optional[str], global_scope: bool) -> str:
+    project = (project_id or "").strip()
+    if bool(project) == bool(global_scope):
+        console.print(f"[red]{_MEMORY_METADATA_HELP}[/red]")
+        raise typer.Exit(code=2)
+    return "global" if global_scope else project
+
+
+def _require_tags(tags: list[str]) -> list[str]:
+    cleaned = [t.strip() for t in tags if t.strip()]
+    if not cleaned:
+        console.print(f"[red]{_MEMORY_METADATA_HELP}[/red]")
+        raise typer.Exit(code=2)
+    return cleaned
+
+
 # ---------- core revision operations --------------------------------------
 
 
@@ -58,7 +85,8 @@ def _print(value, raw_json: bool = False) -> None:
 def remember(
     content: str = typer.Argument(..., help="Memory text. Wrap multi-word strings in quotes."),
     kind: str = typer.Option("free", help="principle | decision | fact | doc | free"),
-    project_id: str = typer.Option("", help="project id; empty = global"),
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id", help="required project id, e.g. auxten/clickmem"),
+    global_scope: bool = typer.Option(False, "--global", help="explicitly write a global memory"),
     privacy: str = typer.Option("private", help="public | private | confidential"),
     tag: list[str] = typer.Option([], "--tag", help="repeatable tag value"),
     pinned: bool = typer.Option(False, "--pin/--no-pin", help="pin on commit"),
@@ -67,12 +95,14 @@ def remember(
     agent: str = typer.Option(""),
 ) -> None:
     """Expand: commit a new memory."""
+    resolved_project = _resolve_memory_scope(project_id, global_scope)
+    tags = _require_tags(list(tag))
     result = get_transport().remember(
         content,
         kind=kind,
-        project_id=project_id,
+        project_id=resolved_project,
         privacy=privacy,
-        tags=list(tag),
+        tags=tags,
         pinned=pinned,
         source=source,
         source_ref=source_ref,

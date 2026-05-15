@@ -35,11 +35,11 @@ async def test_stats_overview_zero_state(client):
 async def test_memory_roundtrip(client):
     r = await client.post(
         "/v1/memories",
-        json={"content": "principle of small commits", "kind": "principle", "project_id": "p1"},
+        json={"content": "principle of small commits", "kind": "principle", "project_id": "p1", "tags": ["test"]},
     )
     assert r.status_code == 200
     payload = r.json()
-    assert payload["status"] == "added"
+    assert payload["status"] == "queued"
     mid = payload["id"]
 
     r = await client.get(f"/v1/memories/{mid}")
@@ -65,12 +65,20 @@ async def test_memory_roundtrip(client):
 
 
 async def test_memory_list_filters(client):
-    await client.post("/v1/memories", json={"content": "first one", "project_id": "p1"})
-    await client.post("/v1/memories", json={"content": "second", "project_id": "p2"})
+    await client.post("/v1/memories", json={"content": "first one", "project_id": "p1", "tags": ["test"]})
+    await client.post("/v1/memories", json={"content": "second", "project_id": "p2", "tags": ["test"]})
     r = await client.get("/v1/memories", params={"project_id": "p2"})
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 1
+
+
+async def test_memory_create_requires_scope_and_tags(client):
+    r = await client.post("/v1/memories", json={"content": "missing metadata"})
+    assert r.status_code == 400
+    assert "explicit scope and tags" in r.json()["detail"]
+    assert "--project owner/repo" in r.json()["detail"]
+    assert "--global" in r.json()["detail"]
 
 
 async def test_memory_get_not_found(client):
@@ -82,10 +90,13 @@ async def test_memory_get_not_found(client):
 
 
 async def test_recall_endpoint_with_score(client):
+    from clickmem import memories
+
     await client.post(
         "/v1/memories",
-        json={"content": "alpha bravo recall fixture", "project_id": "p1", "privacy": "public"},
+        json={"content": "alpha bravo recall fixture", "project_id": "p1", "privacy": "public", "tags": ["test"]},
     )
+    memories.process_pending_embeddings()
     r = await client.post(
         "/v1/recall",
         json={"query": "alpha bravo recall fixture", "project_id": "p1", "limit": 5},
@@ -96,10 +107,13 @@ async def test_recall_endpoint_with_score(client):
 
 
 async def test_recall_trace_endpoint(client):
+    from clickmem import memories
+
     await client.post(
         "/v1/memories",
-        json={"content": "trace fixture content", "project_id": "p1", "privacy": "public"},
+        json={"content": "trace fixture content", "project_id": "p1", "privacy": "public", "tags": ["test"]},
     )
+    memories.process_pending_embeddings()
     r = await client.post(
         "/v1/recall/trace",
         json={"query": "trace fixture content", "project_id": "p1", "limit": 5},
@@ -279,7 +293,7 @@ async def test_agents_all_activity(client):
     # Generate at least one event so the bucket has something to count.
     await client.post(
         "/v1/memories",
-        json={"content": "activity feeder one", "project_id": "p1"},
+        json={"content": "activity feeder one", "project_id": "p1", "tags": ["test"]},
     )
     r = await client.get("/v1/agents/_all/activity", params={"hours": 24})
     assert r.status_code == 200

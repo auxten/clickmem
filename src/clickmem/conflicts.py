@@ -69,6 +69,7 @@ def _fetch_neighbors(
     threshold = float(threshold if threshold is not None else get_config().conflict_threshold)
     where_parts = [
         f"status = 'active'",
+        f"pending_embedding = 0",
         f"project_id = {quote_str(candidate.project_id)}",
         f"kind = {quote_str(candidate.kind)}",
     ]
@@ -95,11 +96,11 @@ def _mark_conflicted(
         "INSERT INTO memories "
         "(id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
-        "recall_hits, created_at, updated_at) "
+        "recall_hits, pending_embedding, embed_attempts, created_at, updated_at) "
         "SELECT id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "'conflicted', pinned, contract_reason, revises_id, "
         f"arrayDistinct(arrayConcat(conflict_with, {arr})), content_hash, "
-        f"recall_hits, created_at, {utc_now_sql()} "
+        f"recall_hits, pending_embedding, embed_attempts, created_at, {utc_now_sql()} "
         f"FROM memories FINAL WHERE id = {quote_str(candidate_id)}"
     )
     backend.execute(sql)
@@ -110,10 +111,10 @@ def _bump_recall_hits(memory_id: str, backend: Backend) -> None:
         "INSERT INTO memories "
         "(id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
-        "recall_hits, created_at, updated_at) "
+        "recall_hits, pending_embedding, embed_attempts, created_at, updated_at) "
         "SELECT id, content, kind, source, source_ref, project_id, privacy, tags, embedding, "
         "status, pinned, contract_reason, revises_id, conflict_with, content_hash, "
-        f"recall_hits + 1, created_at, {utc_now_sql()} "
+        f"recall_hits + 1, pending_embedding, embed_attempts, created_at, {utc_now_sql()} "
         f"FROM memories FINAL WHERE id = {quote_str(memory_id)}"
     )
     backend.execute(sql)

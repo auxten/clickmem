@@ -59,11 +59,13 @@ def test_mcp_tool_input_schemas_have_required_fields(backend):
         params = getattr(tool, "parameters", None)
         # mcp ToolParameters defines a JSON schema dict / pydantic model
         assert params is not None
+        if getattr(tool, "name", "") == "clickmem_remember":
+            assert {"content", "project_id", "tags"}.issubset(set(params.get("required", [])))
 
 
 def test_clickmem_remember_through_transport(backend):
     """``clickmem_remember`` is a thin wrapper around ``LocalTransport.remember``."""
-    out = LocalTransport().remember("mcp smoke add", kind="fact", project_id="p1")
+    out = LocalTransport().remember("mcp smoke add", kind="fact", project_id="p1", tags=["test"])
     assert out["status"] == "added"
     assert memories.get(out["id"]) is not None
 
@@ -74,13 +76,14 @@ def test_clickmem_recall_through_transport(backend):
         kind="fact",
         project_id="p1",
         privacy="public",
+        tags=["test"],
     )
     out = LocalTransport().recall("mcp smoke recall fixture", project_id="p1", limit=5)
     assert out["hits"]
 
 
 def test_clickmem_show_through_transport(backend):
-    res = LocalTransport().remember("show me", kind="fact", project_id="p1")
+    res = LocalTransport().remember("show me", kind="fact", project_id="p1", tags=["test"])
     show = LocalTransport().show(res["id"], with_history=True)
     assert show["memory"]["content"] == "show me"
     assert show["history"]

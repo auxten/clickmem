@@ -36,10 +36,10 @@ def _register_tools(server: FastMCP) -> None:
     @server.tool()
     def clickmem_remember(
         content: str,
+        project_id: str,
+        tags: list[str],
         kind: str = "free",
-        project_id: str = "",
         privacy: str = "private",
-        tags: Optional[list[str]] = None,
         pinned: bool = False,
         source: str = "agent_remember",
         source_ref: str = "",
@@ -48,10 +48,15 @@ def _register_tools(server: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Expand: commit a new memory.
 
+        ``project_id`` is required. Pass a readable project slug such as
+        ``auxten/clickmem`` for project memory, or the literal string
+        ``global`` for global memory. ``tags`` must contain at least one
+        management/search tag, e.g. ``["workflow", "deployment"]``.
+
         Returns ``{status, id, peer_ids, message}``. ``status`` is one of
-        ``added`` / ``merged`` / ``conflicted`` / ``rejected`` / ``refused`` —
-        the calling agent should react to ``conflicted`` by either Revising
-        the existing memory or contracting one.
+        ``queued`` / ``added`` / ``merged`` / ``conflicted`` / ``rejected`` /
+        ``refused`` — the calling agent should react to ``conflicted`` by
+        either Revising the existing memory or contracting one.
         """
         return get_transport().remember(
             content,

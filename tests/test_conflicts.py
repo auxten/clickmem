@@ -40,9 +40,9 @@ def synthetic_embedder():
 
 
 def test_conflict_detected_when_embeddings_close(synthetic_embedder, backend):
-    a = memories.add("alpha first variant text", kind="fact", project_id="p1")
+    a = memories.add("alpha first variant text", kind="fact", project_id="p1", tags=["test"])
     assert a["status"] == "added"
-    b = memories.add("alpha second variant text", kind="fact", project_id="p1")
+    b = memories.add("alpha second variant text", kind="fact", project_id="p1", tags=["test"])
     assert b["status"] == "conflicted"
     assert a["id"] in b["peer_ids"]
 
@@ -52,16 +52,16 @@ def test_conflict_detected_when_embeddings_close(synthetic_embedder, backend):
 
 
 def test_pinned_short_circuits_rejects_new_commit(synthetic_embedder, backend):
-    a = memories.add("alpha pinned canonical", kind="fact", project_id="p1", pinned=True)
+    a = memories.add("alpha pinned canonical", kind="fact", project_id="p1", pinned=True, tags=["test"])
     assert a["status"] == "added"
-    b = memories.add("alpha rival commit", kind="fact", project_id="p1")
+    b = memories.add("alpha rival commit", kind="fact", project_id="p1", tags=["test"])
     assert b["status"] == "rejected"
     assert a["id"] in b["peer_ids"]
 
 
 def test_resolve_revise_contracts_peer(synthetic_embedder, backend):
-    a = memories.add("alpha original", kind="fact", project_id="p1")
-    b = memories.add("alpha variant", kind="fact", project_id="p1")
+    a = memories.add("alpha original", kind="fact", project_id="p1", tags=["test"])
+    b = memories.add("alpha variant", kind="fact", project_id="p1", tags=["test"])
     assert b["status"] == "conflicted"
 
     res = conflicts.resolve(b["id"], "revise", peer_id=a["id"])
@@ -71,8 +71,8 @@ def test_resolve_revise_contracts_peer(synthetic_embedder, backend):
 
 
 def test_resolve_contract_drops_peer_keeps_target(synthetic_embedder, backend):
-    a = memories.add("alpha keep me", kind="fact", project_id="p1")
-    b = memories.add("alpha drop me", kind="fact", project_id="p1")
+    a = memories.add("alpha keep me", kind="fact", project_id="p1", tags=["test"])
+    b = memories.add("alpha drop me", kind="fact", project_id="p1", tags=["test"])
     res = conflicts.resolve(a["id"], "contract", peer_id=b["id"])
     assert res["status"] == "ok"
     assert memories.get(a["id"]).status == "active"
@@ -80,8 +80,8 @@ def test_resolve_contract_drops_peer_keeps_target(synthetic_embedder, backend):
 
 
 def test_resolve_allow_clears_both(synthetic_embedder, backend):
-    a = memories.add("alpha one", kind="fact", project_id="p1")
-    b = memories.add("alpha two", kind="fact", project_id="p1")
+    a = memories.add("alpha one", kind="fact", project_id="p1", tags=["test"])
+    b = memories.add("alpha two", kind="fact", project_id="p1", tags=["test"])
     res = conflicts.resolve(a["id"], "allow", peer_id=b["id"])
     assert res["status"] == "ok"
     assert memories.get(a["id"]).status == "active"
@@ -99,7 +99,7 @@ def test_canonical_merge_returns_same_id(synthetic_embedder, backend):
     Uses the synthetic embedder so both texts hash to the same vector (they
     both share neither alpha/beta/gamma, so fall in the "else" bucket).
     """
-    a = memories.add("Build twice. Verify once.", kind="fact", project_id="p1")
-    b = memories.add("BUILD TWICE; verify once", kind="fact", project_id="p1")
+    a = memories.add("Build twice. Verify once.", kind="fact", project_id="p1", tags=["test"])
+    b = memories.add("BUILD TWICE; verify once", kind="fact", project_id="p1", tags=["test"])
     assert b["status"] == "merged"
     assert b["id"] == a["id"]
