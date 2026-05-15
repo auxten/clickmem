@@ -14,7 +14,7 @@ clickmem dashboard open         # http://127.0.0.1:9527/dashboard
 ## Core Memory Commands
 
 ```bash
-clickmem remember "..."
+clickmem remember "..." --project owner/repo --tag workflow
 clickmem list --project X --kind principle --json
 clickmem show <id>
 clickmem edit <id> --content "..." --privacy public --pin
@@ -24,8 +24,8 @@ clickmem blacklist add "internal-only stuff" --scope global --reason "leaks"
 clickmem blacklist add id:abc-123 --reason "outdated"
 clickmem conflicts
 clickmem resolve <id> --revise <peer_id>    # or --contract / --allow
-clickmem recall "your query"
-clickmem recall-trace "your query"
+clickmem recall "your query" --project owner/repo --tag workflow --timeout-seconds 5
+clickmem recall-trace "your query" --project owner/repo --tag workflow
 clickmem get-raw <session_id> [--last N]
 ```
 
@@ -41,13 +41,34 @@ After a task completes, a connected agent can commit a refined memory through MC
   "args": {
     "content": "When using chDB inside an asyncio app, wrap every query in asyncio.to_thread because the embedded server is blocking.",
     "kind": "principle",
+    "project_id": "auxten/clickmem",
     "privacy": "public",
     "tags": ["python", "chdb", "async"]
   }
 }
 ```
 
-The agent inherits the current project from `cwd`. Privacy defaults to `private`.
+The agent must pass an explicit `project_id` and at least one tag. Privacy defaults to `private`.
+
+### Startup Recall
+
+Before a connected agent starts non-trivial work, it should derive the current project id, infer a few task tags, and recall with a short fail-open timeout:
+
+```json
+{
+  "tool": "clickmem_recall",
+  "args": {
+    "query": "deploy current project and commit code",
+    "project_id": "auxten/clickmem",
+    "tags": ["deployment", "git", "workflow"],
+    "tag_mode": "any",
+    "limit": 10,
+    "timeout_seconds": 5.0
+  }
+}
+```
+
+Recall filters by project and supplied tags before embedding ranking. If recall times out or fails, the agent should continue with an empty memory context.
 
 ### Curated Doc Import
 
@@ -81,7 +102,7 @@ ClickMem also surfaces conflicts automatically. When a new memory is semanticall
 
 ## Project And Privacy Scoping
 
-Project is detected from `cwd` to git remote at write time and frozen on the memory.
+Project id is explicit on writes and frozen on the memory. Startup recall should pass the current project id and task tags so ClickMem can prefilter candidates before vector ranking.
 
 | Source | Recall multiplier |
 | --- | --- |
@@ -226,6 +247,8 @@ Representative endpoints:
 - `/v1/agents`
 - `/v1/events`
 - `/v1/stats/*`
+
+`POST /v1/recall` and `/v1/recall/trace` accept `query`, `project_id`, `tags`, `tag_mode`, `kind`, privacy flags, `cross_project`, `limit`, and `timeout_seconds` (default `5.0`). Timeout responses are fail-open and return empty hits with a warning.
 
 ## Configuration
 

@@ -7,7 +7,7 @@
           {
             "type": "http",
             "url": "${CLICKMEM_URL:-http://127.0.0.1:9527}/v1/recall",
-            "timeout": 15
+            "timeout": 5
           }
         ]
       }

@@ -106,6 +106,57 @@ async def test_recall_endpoint_with_score(client):
     assert hits and hits[0]["project_id"] == "p1"
 
 
+async def test_recall_filters_by_tags_and_project_before_ranking(client):
+    from clickmem import memories
+
+    await client.post(
+        "/v1/memories",
+        json={
+            "content": "deploy local mini relationship canonical",
+            "project_id": "p1",
+            "privacy": "public",
+            "tags": ["deployment", "workflow"],
+        },
+    )
+    await client.post(
+        "/v1/memories",
+        json={
+            "content": "deploy local mini relationship missing workflow",
+            "project_id": "p1",
+            "privacy": "public",
+            "tags": ["deployment"],
+        },
+    )
+    await client.post(
+        "/v1/memories",
+        json={
+            "content": "deploy local mini relationship other project",
+            "project_id": "p2",
+            "privacy": "public",
+            "tags": ["deployment", "workflow"],
+        },
+    )
+    memories.process_pending_embeddings(limit=10)
+
+    r = await client.post(
+        "/v1/recall",
+        json={
+            "query": "deploy local mini relationship",
+            "project_id": "p1",
+            "tags": ["deployment", "workflow"],
+            "tag_mode": "all",
+            "limit": 5,
+        },
+    )
+    assert r.status_code == 200
+    hits = r.json()["hits"]
+    assert hits
+    assert {h["project_id"] for h in hits} == {"p1"}
+    assert all(set(["deployment", "workflow"]).issubset(set(h["tags"])) for h in hits)
+    assert hits[0]["tag_match_count"] == 2
+    assert hits[0]["tag_boost"] > 1.0
+
+
 async def test_recall_trace_endpoint(client):
     from clickmem import memories
 
@@ -122,6 +173,46 @@ async def test_recall_trace_endpoint(client):
     payload = r.json()
     assert "candidates" in payload
     assert "hits" in payload
+    assert payload["filters"]["tags"] == []
+    assert payload["filters"]["tag_mode"] == "any"
+
+
+async def test_recall_endpoint_fails_open_on_timeout(client, monkeypatch):
+    import time
+    from clickmem import server as server_mod
+
+    def slow_recall(*args, **kwargs):  # noqa: ANN002, ANN003
+        time.sleep(0.3)
+        raise AssertionError("slow recall should not block response")
+
+    monkeypatch.setattr(server_mod.recall_mod, "recall", slow_recall)
+    r = await client.post(
+        "/v1/recall",
+        json={"query": "slow recall", "project_id": "p1", "timeout_seconds": 0.1},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hits"] == []
+    assert body["timeout"] is True
+    assert "continuing without memory context" in body["warning"]
+
+
+async def test_recall_endpoint_fails_open_on_internal_error(client, monkeypatch):
+    from clickmem import server as server_mod
+
+    def broken_recall(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("embedding backend exploded")
+
+    monkeypatch.setattr(server_mod.recall_mod, "recall", broken_recall)
+    r = await client.post(
+        "/v1/recall",
+        json={"query": "broken recall", "project_id": "p1", "timeout_seconds": 5.0},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hits"] == []
+    assert body["timeout"] is False
+    assert "continuing without memory context" in body["warning"]
 
 
 # ---------- Conflicts -----------------------------------------------------

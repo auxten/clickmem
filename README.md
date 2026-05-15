@@ -58,6 +58,8 @@ That starts a local server, installs supported agent hooks, and opens the dashbo
 
 From there, you can add memories manually, let connected agents commit refined memories, import curated docs such as `AGENTS.md` and `CLAUDE.md`, and inspect everything from the dashboard.
 
+At the start of a task, connected agents recall opportunistically: derive the current `project_id`, infer a few task tags, call recall with the user's request, and continue without memory context if recall takes about 5 seconds or fails.
+
 ## How Memories Enter
 
 There are two deliberate paths:
@@ -99,7 +101,9 @@ Built-in adapters cover Claude Code, Cursor, Codex CLI, Aider, Continue.dev, Cli
 
 ## Architecture
 
-One local process serves REST, MCP SSE, and the dashboard on the same port. Storage can be embedded chDB for a single machine or LAN setup, or ClickHouse for a shared backend. Recall is embedding-based and filtered by project, privacy, status, and explicit caller options.
+One local process serves REST, MCP SSE, and the dashboard on the same port. Storage can be embedded chDB for a single machine or LAN setup, or ClickHouse for a shared backend. Recall is embedding-based and filtered by project, tags, privacy, status, and explicit caller options.
+
+Startup recall can filter by tags before vector ranking, so operational memories such as deployment or git workflow notes surface only when the current task asks for that class of context.
 
 The server does not decide what your beliefs are. It stores, retrieves, revises, and audits memories that were explicitly committed.
 

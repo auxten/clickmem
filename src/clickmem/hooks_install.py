@@ -26,6 +26,7 @@ from typing import Any, List, Optional
 from clickmem.adapters import registry
 from clickmem.config import get_config
 from clickmem.local_or_remote import event_write
+from clickmem.skill_install import install_clickmem_skill
 
 
 _log = logging.getLogger(__name__)
@@ -99,6 +100,9 @@ def install_hooks_for_all(
             results.append({"agent": h.name, "skipped": "not discovered"})
             continue
         result = h.install_hooks(url)
+        skill_result = install_clickmem_skill(h.name)
+        if skill_result.get("installed") or skill_result.get("skipped"):
+            result["skill"] = skill_result
         result.setdefault("agent", h.name)
         results.append(result)
         event_write(

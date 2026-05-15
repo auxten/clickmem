@@ -139,11 +139,20 @@ def _register_tools(server: FastMCP) -> None:
         privacy_ack: bool = False,
         cross_project: bool = False,
         kind: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        tag_mode: str = "any",
+        timeout_seconds: float = 5.0,
         agent: str = "",
     ) -> dict[str, Any]:
-        """Run embedding recall. ``include_confidential`` is only honoured if
-        ``privacy_ack=True`` (extra guard before confidential rows leave the
-        server)."""
+        """Run embedding recall.
+
+        Pass ``project_id`` and 2-5 task tags at startup so recall can scope by
+        project/tag before ranking by embedding similarity. ``tag_mode`` is
+        ``any`` by default; pass ``all`` when every tag must be present.
+
+        ``include_confidential`` is only honoured if ``privacy_ack=True``
+        (extra guard before confidential rows leave the server).
+        """
         if include_confidential and not privacy_ack:
             include_confidential = False
         return get_transport().recall(
@@ -153,6 +162,9 @@ def _register_tools(server: FastMCP) -> None:
             include_confidential=include_confidential,
             cross_project=cross_project,
             kind=kind,
+            tags=list(tags or []),
+            tag_mode=tag_mode,
+            timeout_seconds=timeout_seconds,
             agent=agent,
         )
 
@@ -165,6 +177,9 @@ def _register_tools(server: FastMCP) -> None:
         privacy_ack: bool = False,
         cross_project: bool = False,
         kind: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        tag_mode: str = "any",
+        timeout_seconds: float = 5.0,
         agent: str = "",
     ) -> dict[str, Any]:
         """Recall with per-candidate scoring breakdown (Recall Lab)."""
@@ -177,6 +192,9 @@ def _register_tools(server: FastMCP) -> None:
             include_confidential=include_confidential,
             cross_project=cross_project,
             kind=kind,
+            tags=list(tags or []),
+            tag_mode=tag_mode,
+            timeout_seconds=timeout_seconds,
             agent=agent,
         )
 

@@ -17,6 +17,7 @@ from clickmem import local_or_remote
 from clickmem.adapters import AdapterHandle, registry
 from clickmem.backend import Backend, get_backend
 from clickmem.events import activity_counts
+from clickmem.skill_install import install_clickmem_skill
 from clickmem.sqlutil import quote_str
 
 
@@ -91,6 +92,9 @@ def install(name: str, server_url: str = "") -> dict[str, Any]:
     if h is None:
         return {"ok": False, "agent": name, "error": "unknown adapter"}
     result = h.install_hooks(server_url)
+    skill_result = install_clickmem_skill(name)
+    if skill_result.get("installed") or skill_result.get("skipped"):
+        result["skill"] = skill_result
     result.setdefault("imported", False)
     result.setdefault("import_hint", f"run `clickmem import-docs` or POST /v1/imports/{name}/run explicitly")
     local_or_remote.event_write(

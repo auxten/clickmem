@@ -8,7 +8,9 @@ transport against that URL; otherwise they call into the local domain.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Protocol
+import queue
+import threading
+from typing import Any, Callable, List, Optional, Protocol
 
 import httpx
 
@@ -59,12 +61,35 @@ class LocalTransport:
     def recall(self, query: str, **kwargs: Any) -> dict[str, Any]:
         from clickmem.recall import recall
 
+        timeout_seconds = kwargs.pop("timeout_seconds", None)
+        if timeout_seconds is not None:
+            return _fail_open_call(
+                lambda: {"hits": [h.to_dict() for h in recall(query, **kwargs)], "timeout": False},
+                timeout_seconds=float(timeout_seconds),
+                fallback_kind="recall",
+            )
         hits = recall(query, **kwargs)
         return {"hits": [h.to_dict() for h in hits]}
 
     def recall_trace(self, query: str, **kwargs: Any) -> dict[str, Any]:
         from clickmem.recall import recall_trace
 
+        timeout_seconds = kwargs.pop("timeout_seconds", None)
+        if timeout_seconds is not None:
+            return _fail_open_call(
+                lambda: recall_trace(query, **kwargs),
+                timeout_seconds=float(timeout_seconds),
+                fallback_kind="recall_trace",
+                query=query,
+                filters={
+                    "project_id": kwargs.get("project_id", ""),
+                    "include_confidential": bool(kwargs.get("include_confidential", False)),
+                    "cross_project": bool(kwargs.get("cross_project", False)),
+                    "kind": kwargs.get("kind"),
+                    "tags": list(kwargs.get("tags") or []),
+                    "tag_mode": kwargs.get("tag_mode", "any"),
+                },
+            )
         return recall_trace(query, **kwargs)
 
     def remember(self, content: str, **kwargs: Any) -> dict[str, Any]:
@@ -173,8 +198,8 @@ class RemoteTransport:
         r.raise_for_status()
         return r.json()
 
-    def _post(self, path: str, body: Optional[dict[str, Any]] = None) -> Any:
-        r = self._client.post(path, json=body or {})
+    def _post(self, path: str, body: Optional[dict[str, Any]] = None, timeout: float | None = None) -> Any:
+        r = self._client.post(path, json=body or {}, timeout=timeout)
         r.raise_for_status()
         return r.json()
 
@@ -194,9 +219,21 @@ class RemoteTransport:
         return self._get("/v1/health")
 
     def recall(self, query: str, **kwargs: Any) -> dict[str, Any]:
+        timeout_seconds = kwargs.get("timeout_seconds")
+        if timeout_seconds is not None:
+            try:
+                return self._post("/v1/recall", {"query": query, **kwargs}, timeout=float(timeout_seconds))
+            except Exception as e:  # noqa: BLE001
+                return _recall_fallback("recall", float(timeout_seconds), e)
         return self._post("/v1/recall", {"query": query, **kwargs})
 
     def recall_trace(self, query: str, **kwargs: Any) -> dict[str, Any]:
+        timeout_seconds = kwargs.get("timeout_seconds")
+        if timeout_seconds is not None:
+            try:
+                return self._post("/v1/recall/trace", {"query": query, **kwargs}, timeout=float(timeout_seconds))
+            except Exception as e:  # noqa: BLE001
+                return _recall_trace_fallback(query, kwargs, float(timeout_seconds), e)
         return self._post("/v1/recall/trace", {"query": query, **kwargs})
 
     def remember(self, content: str, **kwargs: Any) -> dict[str, Any]:
@@ -266,3 +303,68 @@ def get_transport() -> Transport:
     if cfg.remote_url:
         return RemoteTransport(cfg.remote_url, api_key=cfg.api_key)
     return LocalTransport()
+
+
+def _recall_fallback(kind: str, timeout_seconds: float, error: Exception | None = None) -> dict[str, Any]:
+    message = f"{kind} failed or timed out after {timeout_seconds:.1f}s; continuing without memory context"
+    if error is not None:
+        message = f"{message}: {error}"
+    return {"hits": [], "timeout": True, "warning": message}
+
+
+def _recall_trace_fallback(
+    query: str,
+    kwargs: dict[str, Any],
+    timeout_seconds: float,
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    fallback = _recall_fallback("recall_trace", timeout_seconds, error)
+    return {
+        "query": query,
+        "filters": {
+            "project_id": kwargs.get("project_id", ""),
+            "include_confidential": bool(kwargs.get("include_confidential", False)),
+            "cross_project": bool(kwargs.get("cross_project", False)),
+            "kind": kwargs.get("kind"),
+            "tags": list(kwargs.get("tags") or []),
+            "tag_mode": kwargs.get("tag_mode", "any"),
+        },
+        "hits": [],
+        "candidates": [],
+        "timeout": True,
+        "warning": fallback["warning"],
+    }
+
+
+def _fail_open_call(
+    fn: Callable[[], dict[str, Any]],
+    *,
+    timeout_seconds: float,
+    fallback_kind: str,
+    query: str = "",
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result_queue: queue.Queue[tuple[str, dict[str, Any] | Exception]] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            result_queue.put(("ok", fn()), block=False)
+        except Exception as e:  # noqa: BLE001
+            result_queue.put(("error", e), block=False)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        status, payload = result_queue.get(timeout=max(0.1, float(timeout_seconds)))
+    except queue.Empty:
+        if fallback_kind == "recall_trace":
+            return _recall_trace_fallback(query, filters or {}, timeout_seconds)
+        return _recall_fallback(fallback_kind, timeout_seconds)
+    if status == "ok":
+        assert isinstance(payload, dict)
+        payload.setdefault("timeout", False)
+        return payload
+    assert isinstance(payload, Exception)
+    if fallback_kind == "recall_trace":
+        return _recall_trace_fallback(query, filters or {}, timeout_seconds, payload)
+    return _recall_fallback(fallback_kind, timeout_seconds, payload)

@@ -172,6 +172,9 @@ def recall(
     cross_project: bool = typer.Option(False, "--cross-project"),
     include_confidential: bool = typer.Option(False, "--include-confidential"),
     kind: Optional[str] = typer.Option(None),
+    tag: list[str] = typer.Option([], "--tag", help="repeatable tag filter"),
+    tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
+    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", help="fail-open recall timeout"),
     agent: str = typer.Option(""),
 ) -> None:
     """Run embedding recall against the brain."""
@@ -182,10 +185,15 @@ def recall(
         include_confidential=include_confidential,
         cross_project=cross_project,
         kind=kind,
+        tags=list(tag),
+        tag_mode=tag_mode,
+        timeout_seconds=timeout_seconds,
         agent=agent,
     )
     hits = res.get("hits", [])
     if not hits:
+        if res.get("warning"):
+            console.print(f"[yellow]{res['warning']}[/yellow]")
         console.print("[dim]no hits[/dim]")
         return
     table = Table(show_lines=True)
@@ -217,6 +225,9 @@ def recall_trace_cmd(
     cross_project: bool = typer.Option(False, "--cross-project"),
     include_confidential: bool = typer.Option(False, "--include-confidential"),
     kind: Optional[str] = typer.Option(None),
+    tag: list[str] = typer.Option([], "--tag", help="repeatable tag filter"),
+    tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
+    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", help="fail-open recall timeout"),
 ) -> None:
     """Recall with per-candidate scoring breakdown."""
     _print(get_transport().recall_trace(
@@ -226,6 +237,9 @@ def recall_trace_cmd(
         include_confidential=include_confidential,
         cross_project=cross_project,
         kind=kind,
+        tags=list(tag),
+        tag_mode=tag_mode,
+        timeout_seconds=timeout_seconds,
     ))
 
 

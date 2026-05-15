@@ -78,8 +78,21 @@ def test_clickmem_recall_through_transport(backend):
         privacy="public",
         tags=["test"],
     )
-    out = LocalTransport().recall("mcp smoke recall fixture", project_id="p1", limit=5)
+    out = LocalTransport().recall("mcp smoke recall fixture", project_id="p1", tags=["test"], limit=5)
     assert out["hits"]
+    assert out["hits"][0]["tag_match_count"] == 1
+
+
+def test_clickmem_recall_timeout_fails_open_through_transport(monkeypatch, backend):
+    from clickmem import recall as recall_mod
+
+    def broken_recall(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(recall_mod, "recall", broken_recall)
+    out = LocalTransport().recall("mcp smoke timeout", project_id="p1", timeout_seconds=5.0)
+    assert out["hits"] == []
+    assert out["timeout"] is True
 
 
 def test_clickmem_show_through_transport(backend):

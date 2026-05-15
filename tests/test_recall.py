@@ -78,15 +78,36 @@ def test_recall_trace_breakdown(backend):
     assert trace["query"] == "alpha source"
     cand_ids = {c["id"] for c in trace["candidates"]}
     assert a in cand_ids
-    assert b in cand_ids
-    cand_b = next(c for c in trace["candidates"] if c["id"] == b)
-    assert cand_b["project_boost"] == 0.0
-    assert cand_b["kept"] is False
-    assert cand_b["score"] == 0.0
+    assert b not in cand_ids
+
+    cross_trace = recall_trace("alpha source", project_id="p1", cross_project=True, limit=5)
+    cross_ids = {c["id"] for c in cross_trace["candidates"]}
+    assert b in cross_ids
+    cand_b = next(c for c in cross_trace["candidates"] if c["id"] == b)
+    assert cand_b["project_boost"] == 1.0
+    assert cand_b["kept"] is True
 
     cand_a = next(c for c in trace["candidates"] if c["id"] == a)
     assert cand_a["kept"] is True
     assert cand_a["project_boost"] == 1.0
+
+
+def test_recall_tags_filter_and_boost(backend):
+    a = memories.add("deploy local mini workflow", project_id="p1", privacy="public", tags=["deployment", "workflow"])["id"]
+    b = memories.add("deploy local mini security", project_id="p1", privacy="public", tags=["deployment", "security"])["id"]
+
+    hits = recall("deploy local mini", project_id="p1", tags=["deployment", "workflow"], tag_mode="all", limit=5)
+    ids = [h.id for h in hits]
+    assert a in ids
+    assert b not in ids
+    hit = next(h for h in hits if h.id == a)
+    assert hit.tag_match_count == 2
+    assert hit.tag_boost > 1.0
+
+    trace = recall_trace("deploy local mini", project_id="p1", tags=["deployment"], limit=5)
+    assert trace["filters"]["tags"] == ["deployment"]
+    assert trace["candidates"]
+    assert all(c["tag_match_count"] >= 1 for c in trace["candidates"])
 
 
 def test_recall_empty_query_returns_empty(backend):

@@ -187,6 +187,25 @@ def test_cursor_detect_recognises_legacy_install(monkeypatch, tmp_path):
     assert cursor.detect() is True
 
 
+def test_clickmem_startup_skill_installer_copies_supported_agent_skill(fake_home):
+    from clickmem.skill_install import install_clickmem_skill
+
+    out = install_clickmem_skill("cursor")
+    assert out["installed"] is True
+    target = Path(out["path"])
+    assert target == fake_home / ".cursor" / "skills" / "clickmem" / "SKILL.md"
+    text = target.read_text(encoding="utf-8")
+    assert "Startup protocol" in text
+    assert "timeout_seconds=5.0" in text
+
+    assert install_clickmem_skill("claude_code")["path"] == str(
+        fake_home / ".claude" / "skills" / "clickmem" / "SKILL.md"
+    )
+    assert install_clickmem_skill("codex")["path"] == str(
+        fake_home / ".codex" / "skills" / "clickmem" / "SKILL.md"
+    )
+
+
 # ---------- v0 residue cleanup (audit T2.8) -------------------------------
 
 
@@ -292,7 +311,7 @@ def test_is_v0_hook_entry_distinguishes_v0_from_v1():
     }
     assert is_v0_hook_entry(v0_command) is True
 
-    v1_recall = {"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 15}
+    v1_recall = {"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 5}
     v1_raw = {"type": "http", "url": "http://127.0.0.1:9527/v1/raw", "timeout": 15, "async": True}
     assert is_v0_hook_entry(v1_recall) is False
     assert is_v0_hook_entry(v1_raw) is False
@@ -495,7 +514,7 @@ def test_v0_cleanup_is_idempotent(fake_home):
     _write_json(claude_code._SETTINGS, {
         "hooks": {
             "SessionStart": [{
-                "hooks": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 15}],
+                "hooks": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 5}],
             }],
             "Stop": [{
                 "hooks": [{"type": "http", "url": "http://127.0.0.1:9527/v1/raw", "timeout": 15, "async": True}],
@@ -504,7 +523,7 @@ def test_v0_cleanup_is_idempotent(fake_home):
     })
     _write_json(codex._HOOKS_JSON, {
         "hooks": {
-            "on_session_start": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 15}],
+            "on_session_start": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 5}],
             "on_session_end": [{"type": "http", "url": "http://127.0.0.1:9527/v1/raw", "timeout": 15, "async": True}],
         },
     })

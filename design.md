@@ -57,11 +57,12 @@ Six tables, one source of truth in `src/clickmem/schema.py`:
 Embedding-only recall. No keyword pipeline, no LLM rerank — the server is pure embedding lookup + filter:
 
 - **Project multiplier**: same-project ×1.0, global (`project_id=''`) ×0.9, other-project ×0.0. Override with `cross_project=true` or via `projects.allowed_cross_refs`.
+- **Tag filter**: callers can pass `tags` with `tag_mode='any'|'all'`; matched tags prefilter candidates before vector ranking and add a small ranking boost.
 - **Privacy filter**: default returns `public` + `private` for the same project; `confidential` is excluded from MCP responses unless the caller passes `privacy_ack=true`.
 - **Pinned boost**: pinned memories ride above non-pinned at equal cosine.
 - **Status filter**: `contracted` memories are excluded; `conflicted` are still returned but surface a warning in the trace.
 
-`POST /v1/recall/trace` returns the per-candidate breakdown (cosine · project mult · privacy verdict · pinned boost · final score) for the Recall Lab page.
+`POST /v1/recall` and `/v1/recall/trace` default to a roughly 5 second fail-open timeout so startup recall can never freeze an agent. Trace returns the per-candidate breakdown (cosine · project mult · tag boost · privacy verdict · pinned boost · final score) for the Recall Lab page.
 
 ## Backend abstraction
 

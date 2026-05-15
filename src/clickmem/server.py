@@ -85,6 +85,9 @@ class RecallRequest(BaseModel):
     include_confidential: bool = False
     cross_project: bool = False
     kind: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    tag_mode: str = "any"
+    timeout_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
     agent: str = ""
 
 
@@ -390,30 +393,90 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/recall", dependencies=[Depends(auth)])
     async def recall_endpoint(body: RecallRequest):
-        hits = await asyncio.to_thread(
-            recall_mod.recall,
-            body.query,
-            project_id=body.project_id,
-            limit=body.limit,
-            include_confidential=body.include_confidential,
-            cross_project=body.cross_project,
-            kind=body.kind,
-            agent=body.agent,
-        )
-        return {"hits": [h.to_dict() for h in hits]}
+        try:
+            hits = await asyncio.wait_for(
+                asyncio.to_thread(
+                    recall_mod.recall,
+                    body.query,
+                    project_id=body.project_id,
+                    limit=body.limit,
+                    include_confidential=body.include_confidential,
+                    cross_project=body.cross_project,
+                    kind=body.kind,
+                    tags=body.tags,
+                    tag_mode=body.tag_mode,
+                    agent=body.agent,
+                ),
+                timeout=body.timeout_seconds,
+            )
+            return {"hits": [h.to_dict() for h in hits], "timeout": False}
+        except asyncio.TimeoutError:
+            _log.warning("recall timed out after %.2fs", body.timeout_seconds)
+            return {
+                "hits": [],
+                "timeout": True,
+                "warning": f"recall timed out after {body.timeout_seconds:.1f}s; continuing without memory context",
+            }
+        except Exception as e:  # noqa: BLE001
+            _log.exception("recall failed; continuing without memory context")
+            return {
+                "hits": [],
+                "timeout": False,
+                "warning": f"recall failed; continuing without memory context: {e}",
+            }
 
     @app.post("/v1/recall/trace", dependencies=[Depends(auth)])
     async def recall_trace_endpoint(body: RecallRequest):
-        return await asyncio.to_thread(
-            recall_mod.recall_trace,
-            body.query,
-            project_id=body.project_id,
-            limit=body.limit,
-            include_confidential=body.include_confidential,
-            cross_project=body.cross_project,
-            kind=body.kind,
-            agent=body.agent,
-        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    recall_mod.recall_trace,
+                    body.query,
+                    project_id=body.project_id,
+                    limit=body.limit,
+                    include_confidential=body.include_confidential,
+                    cross_project=body.cross_project,
+                    kind=body.kind,
+                    tags=body.tags,
+                    tag_mode=body.tag_mode,
+                    agent=body.agent,
+                ),
+                timeout=body.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            _log.warning("recall trace timed out after %.2fs", body.timeout_seconds)
+            return {
+                "query": body.query,
+                "filters": {
+                    "project_id": body.project_id,
+                    "include_confidential": body.include_confidential,
+                    "cross_project": body.cross_project,
+                    "kind": body.kind,
+                    "tags": body.tags,
+                    "tag_mode": body.tag_mode,
+                },
+                "hits": [],
+                "candidates": [],
+                "timeout": True,
+                "warning": f"recall trace timed out after {body.timeout_seconds:.1f}s",
+            }
+        except Exception as e:  # noqa: BLE001
+            _log.exception("recall trace failed; continuing without memory context")
+            return {
+                "query": body.query,
+                "filters": {
+                    "project_id": body.project_id,
+                    "include_confidential": body.include_confidential,
+                    "cross_project": body.cross_project,
+                    "kind": body.kind,
+                    "tags": body.tags,
+                    "tag_mode": body.tag_mode,
+                },
+                "hits": [],
+                "candidates": [],
+                "timeout": False,
+                "warning": f"recall trace failed: {e}",
+            }
 
     @app.post("/v1/recall_trace", dependencies=[Depends(auth)])
     async def recall_trace_alias(body: RecallRequest):

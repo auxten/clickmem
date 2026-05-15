@@ -4,7 +4,8 @@ description: |
   Local memory store for AI coding agents — explicit-only, no auto-extraction.
   Use when:
   - You just refined a conclusion worth keeping across sessions → call `clickmem_remember`
-  - Starting a task or the user asks "what did we decide about X" → call `clickmem_recall`
+  - Starting a task → derive `project_id` + tags, call `clickmem_recall`, load hits into context, then work
+  - The user asks "what did we decide about X" → call `clickmem_recall`
   - A new commit comes back as `conflicted` → review with `clickmem_show` and call `clickmem_resolve`
   - A stored memory is wrong or stale → `clickmem_edit` (Revise) or `clickmem_forget` (Contract)
   - The user marks a memory as canonical → `clickmem_pin`; bad pattern that should never be remembered → `clickmem_blacklist`
@@ -56,9 +57,31 @@ clickmem remember "Never log raw API keys." \
 
 ## When to recall
 
-- **Start of task** — issue `clickmem_recall` with the user's first message or the task description; pull in 3–10 hits before doing work.
+- **Start of task** — before planning, editing, or running commands, derive the current `project_id`, infer 2–5 task tags, issue `clickmem_recall`, and load the relevant hits into context.
 - **On demand** — whenever the user asks "what did we decide", "what's the convention here", or you need project context you don't have.
 - Default scope is the current project + global memories. Pass `cross_project=true` only when the user explicitly asks to look across projects.
+
+Startup protocol:
+
+1. Determine `project_id` from the current repository when possible. Use a stable readable slug such as `auxten/clickmem`; use `global` only for cross-project principles.
+2. Infer 2–5 short tags from the task, e.g. `deployment`, `git`, `workflow`, `hooks`, `security`, `storage`.
+3. Call `clickmem_recall` with the user's prompt or task summary, `project_id`, those `tags`, `tag_mode="any"`, `limit=10`, and `timeout_seconds=5.0`.
+4. If recall returns hits, place a concise `Relevant ClickMem memories` block in your working context before doing the task. Keep memory IDs available for traceability.
+5. If recall times out, errors, or returns no hits, continue without memory context. Do not block the user waiting for memory recall.
+
+Example MCP call:
+
+```json
+{
+  "query": "deploy current project and commit code",
+  "project_id": "auxten/clickmem",
+  "tags": ["deployment", "git", "workflow"],
+  "tag_mode": "any",
+  "limit": 10,
+  "timeout_seconds": 5.0,
+  "agent": "cursor"
+}
+```
 
 ---
 

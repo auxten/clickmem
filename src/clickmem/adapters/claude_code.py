@@ -130,7 +130,7 @@ def install_hooks(server_url: str = "") -> dict[str, Any]:
     raw_url = f"{base}/v1/raw"
 
     hooks["SessionStart"] = [{
-        "hooks": [{"type": "http", "url": recall_url, "timeout": 15}],
+        "hooks": [{"type": "http", "url": recall_url, "timeout": 5}],
     }]
     hooks["Stop"] = [{
         "hooks": [{"type": "http", "url": raw_url, "timeout": 15, "async": True}],

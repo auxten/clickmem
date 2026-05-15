@@ -140,7 +140,7 @@ def install_hooks(server_url: str = "") -> dict[str, Any]:
     raw_url = f"{base}/v1/raw"
     recall_url = f"{base}/v1/recall"
 
-    hooks["on_session_start"] = [{"type": "http", "url": recall_url, "timeout": 15}]
+    hooks["on_session_start"] = [{"type": "http", "url": recall_url, "timeout": 5}]
     hooks["on_session_end"] = [{"type": "http", "url": raw_url, "timeout": 15, "async": True}]
 
     _save_hooks(data)

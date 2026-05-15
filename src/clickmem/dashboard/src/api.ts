@@ -154,6 +154,8 @@ export interface RecallHit {
   cosine_sim: number;
   score: number;
   project_boost: number;
+  tag_boost: number;
+  tag_match_count: number;
   source: string;
   tags: string[];
   updated_at: string;
@@ -168,6 +170,8 @@ export interface RecallTraceCandidate {
   pinned: boolean;
   cosine_sim: number;
   project_boost: number;
+  tag_boost: number;
+  tag_match_count: number;
   blacklisted: boolean;
   privacy_blocked: boolean;
   score: number;
@@ -181,6 +185,8 @@ export interface RecallTrace {
     include_confidential: boolean;
     cross_project: boolean;
     kind: string | null;
+    tags: string[];
+    tag_mode: string;
   };
   hits: RecallHit[];
   candidates: RecallTraceCandidate[];
@@ -429,6 +435,8 @@ export const api = {
     include_confidential?: boolean;
     cross_project?: boolean;
     kind?: string | null;
+    tags?: string[];
+    tag_mode?: string;
   }) =>
     request<{ hits: RecallHit[] }>("POST", "/v1/recall", body),
 
@@ -439,6 +447,8 @@ export const api = {
     include_confidential?: boolean;
     cross_project?: boolean;
     kind?: string | null;
+    tags?: string[];
+    tag_mode?: string;
   }) => request<RecallTrace>("POST", "/v1/recall/trace", body),
 
   // ---- Raw ------------------------------------------------------------
