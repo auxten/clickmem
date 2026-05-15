@@ -214,25 +214,7 @@ clickmem resolve <id> --revise <peer_id>    # or --contract / --allow
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph agents [Agents - any platform]
-    CC["Claude Code"]
-    Cur["Cursor"]
-    Cdx["Codex"]
-    Others["Aider · Continue · Cline ·<br/>Windsurf · Zed · JetBrains AI"]
-    Gen["Generic via REST/MCP"]
-  end
-  Docs["AGENTS.md · CLAUDE.md ·<br/>.cursor/rules/*.mdc"] -->|"git-aware import"| API
-  agents -->|"clickmem_remember<br/>(refined memory)"| API
-  agents -->|"raw stop-hook<br/>(cold storage only)"| Raw
-  Dash["/dashboard<br/>(human-in-the-loop)"] --> API
-  LAN["LAN agents on other hosts"] --> API
-  API["clickmem :9527<br/>REST + MCP SSE"] --> Store
-  Store[("Memories + conflicts + edit log<br/>chDB local OR ClickHouse Cloud")] --> Recall["recall · edit · forget"]
-  Raw[("raw_transcripts<br/>(cold)")] -.->|"clickmem_get_raw only"| API
-  Recall --> agents
-```
+![ClickMem architecture](assets/clickmem-architecture.png)
 
 One process, one port (9527), one memories table. The server runs no LLM. The only loaded model is the embedding model.
 
