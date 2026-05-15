@@ -95,7 +95,7 @@ It is bundled into the package and served by the same local process at `/dashboa
 
 ClickMem exposes the same capabilities through the dashboard, CLI, REST API, and MCP tools.
 
-Built-in adapters cover Claude Code, Cursor, Codex CLI, Aider, Continue.dev, Cline, Windsurf, Zed, JetBrains AI, and a generic REST/MCP path for anything else. The design is not limited to coding agents: any AI workflow can use ClickMem as a scoped, user-controlled memory layer.
+Built-in adapters cover Claude Code, Cursor, Codex CLI, Aider, Continue.dev, Cline, Windsurf, Zed, JetBrains AI, OpenClaw, Hermes Agent, and a generic REST/MCP path for anything else. The design is not limited to coding agents: any AI workflow can use ClickMem as a scoped, user-controlled memory layer.
 
 ## Architecture
 

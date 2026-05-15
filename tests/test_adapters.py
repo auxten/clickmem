@@ -1,4 +1,4 @@
-"""Adapter registry: 10 handles, doc-only adapters surface clean errors,
+"""Adapter registry: 12 handles, doc-only adapters surface clean errors,
 experimental flag honoured for cline + jetbrains, plus v0 install residue
 detection + cleanup for ``clickmem hooks install`` (audit T2.8).
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from clickmem import adapters
-from clickmem.adapters import claude_code, codex, cursor
+from clickmem.adapters import claude_code, codex, cursor, hermes, openclaw
 from clickmem.adapters.base import V0ResidueItem, is_v0_hook_entry
 
 
@@ -25,14 +25,16 @@ EXPECTED_NAMES = [
     "windsurf",
     "zed",
     "jetbrains",
+    "openclaw",
+    "hermes",
     "generic",
 ]
 
 
-def test_registry_lists_ten_adapters():
+def test_registry_lists_twelve_adapters():
     names = [h.name for h in adapters.registry]
     assert names == EXPECTED_NAMES
-    assert len(set(names)) == 10
+    assert len(set(names)) == 12
 
 
 def test_get_returns_handle_for_known_names():
@@ -64,6 +66,42 @@ def test_generic_adapter_always_detects():
     assert adapters.get("generic").detect() is True
     res = adapters.get("generic").install_hooks(server_url="http://127.0.0.1:9527")
     assert res["installed"] is True
+
+
+def test_openclaw_install_writes_managed_hook_and_config(monkeypatch, tmp_path):
+    state = tmp_path / ".openclaw"
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state))
+    monkeypatch.delenv("OPENCLAW_CONFIG_PATH", raising=False)
+
+    res = openclaw.install_hooks(server_url="http://127.0.0.1:9527")
+    assert res["ok"] is True
+    hook_dir = state / "hooks" / "clickmem"
+    assert (hook_dir / "HOOK.md").is_file()
+    assert (hook_dir / "handler.ts").is_file()
+
+    config = json.loads((state / "openclaw.json").read_text(encoding="utf-8"))
+    assert config["hooks"]["internal"]["entries"]["clickmem"]["enabled"] is True
+
+    out = openclaw.uninstall_hooks()
+    assert out["ok"] is True
+    assert not hook_dir.exists()
+    config = json.loads((state / "openclaw.json").read_text(encoding="utf-8"))
+    assert "clickmem" not in config["hooks"]["internal"]["entries"]
+
+
+def test_hermes_install_writes_gateway_hook(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    res = hermes.install_hooks(server_url="http://127.0.0.1:9527")
+    assert res["ok"] is True
+    hook_dir = root / "hooks" / "clickmem"
+    assert (hook_dir / "HOOK.yaml").is_file()
+    assert (hook_dir / "handler.py").is_file()
+
+    out = hermes.uninstall_hooks()
+    assert out["ok"] is True
+    assert not hook_dir.exists()
 
 
 def test_iter_doc_paths_returns_iterable(monkeypatch, tmp_path):

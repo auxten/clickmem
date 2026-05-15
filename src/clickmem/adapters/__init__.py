@@ -27,7 +27,9 @@ from clickmem.adapters import (
     continue_dev,
     cursor,
     generic,
+    hermes,
     jetbrains,
+    openclaw,
     windsurf,
     zed,
 )
@@ -142,6 +144,8 @@ _modules: List[ModuleType] = [
     windsurf,
     zed,
     jetbrains,
+    openclaw,
+    hermes,
     generic,
 ]
 

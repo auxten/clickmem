@@ -144,6 +144,8 @@ Every adapter handles raw landing and doc import. Refined memories flow through 
 | Windsurf | yes | doc-only | `~/.codeium/windsurf/memories/*` | |
 | Zed | yes | doc-only | `~/.config/zed/conversations/*.json` | |
 | JetBrains AI | yes | doc-only | `aiAssistant/` chat history | Experimental |
+| OpenClaw | yes | yes | `~/.openclaw/workspace/memory/*.md` | Managed hook; restart gateway after install |
+| Hermes Agent | yes | yes | `~/.hermes/{MEMORY,USER,AGENTS}.md` | Gateway hook; restart gateway after install |
 | Generic | n/a | REST/MCP direct | n/a | For anything else |
 
 ```bash

@@ -7,6 +7,12 @@ build/
 .pytest_cache/
 *.egg
 .venv/
+.venv-*/
+venv/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .cursor/
 audit-results/
 
