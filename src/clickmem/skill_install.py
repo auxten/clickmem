@@ -25,11 +25,13 @@ def _repo_skill_path() -> Path | None:
 def _copy_bundled_skill(target: Path) -> Path:
     repo_path = _repo_skill_path()
     if repo_path is not None:
-        shutil.copyfile(repo_path, target)
+        if repo_path.resolve() != target.resolve():
+            shutil.copyfile(repo_path, target)
         return repo_path
     candidate = resources.files("clickmem").joinpath("skills", "clickmem", "SKILL.md")
     with resources.as_file(candidate) as path:
-        shutil.copyfile(path, target)
+        if path.resolve() != target.resolve():
+            shutil.copyfile(path, target)
         return path
 
 

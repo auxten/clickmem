@@ -206,6 +206,22 @@ def test_clickmem_startup_skill_installer_copies_supported_agent_skill(fake_home
     )
 
 
+def test_clickmem_startup_skill_installer_is_idempotent_for_same_file(monkeypatch, tmp_path):
+    from clickmem import skill_install
+    from clickmem.skill_install import install_clickmem_skill
+
+    source = tmp_path / "skills" / "clickmem" / "SKILL.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Startup protocol\n", encoding="utf-8")
+
+    monkeypatch.setattr(skill_install, "_repo_skill_path", lambda: source)
+    monkeypatch.setattr(skill_install, "_target_for", lambda agent: source)
+
+    out = install_clickmem_skill("cursor")
+    assert out["installed"] is True
+    assert out["path"] == str(source)
+
+
 # ---------- v0 residue cleanup (audit T2.8) -------------------------------
 
 
