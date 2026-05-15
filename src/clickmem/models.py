@@ -44,7 +44,7 @@ def _dt_iso(dt: datetime | None) -> str:
 
 VALID_KINDS = {"principle", "decision", "fact", "doc", "free"}
 VALID_PRIVACY = {"public", "private", "confidential"}
-VALID_STATUS = {"active", "contracted", "conflicted"}
+VALID_STATUS = {"active", "contracted", "conflicted", "embedding_failed"}
 VALID_OPS = {"expand", "revise", "contract", "pin", "unpin", "resolve"}
 
 

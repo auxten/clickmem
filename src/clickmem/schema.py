@@ -43,12 +43,27 @@ def memories_ddl(embed_dim: int = DEFAULT_EMBED_DIM) -> str:
         content_hash    String DEFAULT '',
         recall_hits     UInt64 DEFAULT 0,
 
+        pending_embedding UInt8 DEFAULT 0,
+        embed_attempts    UInt8 DEFAULT 0,
+
         created_at      DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC'),
         updated_at      DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
     )
     ENGINE = ReplacingMergeTree(updated_at)
     ORDER BY (project_id, kind, id)
     """.strip()
+
+
+def memories_alter_for_async_embed() -> List[str]:
+    """Backward-compat ALTERs for databases created before async embedding.
+
+    These are issued on every bootstrap as best-effort statements: failures
+    are swallowed by the backend wrapper so the server stays up.
+    """
+    return [
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS pending_embedding UInt8 DEFAULT 0",
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_attempts UInt8 DEFAULT 0",
+    ]
 
 
 def memory_history_ddl() -> str:
