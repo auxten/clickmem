@@ -1,0 +1,8 @@
+{
+  "models": [],
+  "tabAutocompleteModel": null,
+  "clickmem": {
+    "v0_install": true,
+    "url": "http://127.0.0.1:9527/hooks/claude-code"
+  }
+}

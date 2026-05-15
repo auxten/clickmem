@@ -1,0 +1,27 @@
+{
+  "enabledPlugins": {
+    "clickmem@local": true
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://127.0.0.1:9527/hooks/claude-code -d @-"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST http://127.0.0.1:9527/hooks/claude-code -d @-"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "version": 0,
+  "hooks": {
+    "on_session_end": [
+      {
+        "type": "shell",
+        "command": "curl -sS -X POST http://127.0.0.1:9527/hooks/claude-code -d @-",
+        "timeout": 15
+      }
+    ]
+  }
+}
