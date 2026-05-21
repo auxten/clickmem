@@ -14,6 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Build dashboard
+        working-directory: src/clickmem/dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,7 +48,7 @@ jobs:
           echo "Releasing version ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
 
-      - name: Build wheel + sdist (includes prebuilt dashboard/dist)
+      - name: Build wheel + sdist (dashboard/dist is prebuilt above)
         run: python -m build
 
       - name: Publish to PyPI
