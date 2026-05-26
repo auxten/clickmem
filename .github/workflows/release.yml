@@ -9,10 +9,12 @@ jobs:
     name: build + publish to PyPI
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: read
+      id-token: write   # PyPI trusted publishing (OIDC)
+      contents: write   # commit version bump back to main + create GitHub Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history to switch to main and push
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -43,13 +45,41 @@ jobs:
           pip install build hatchling
 
       - name: Set package version from tag
+        id: version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Releasing version ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build wheel + sdist (dashboard/dist is prebuilt above)
         run: python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --title "ClickMem ${VERSION}" \
+            ./dist/*
+
+      - name: Commit version bump back to main
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          if [ -n "$(git status --porcelain pyproject.toml)" ]; then
+            git add pyproject.toml
+            git commit -m "release: bump version to ${VERSION} [skip ci]"
+            git push origin main
+          else
+            echo "pyproject.toml already at ${VERSION} on main; skipping commit"
+          fi
