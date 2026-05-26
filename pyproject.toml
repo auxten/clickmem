@@ -72,6 +72,23 @@ include = [
     "LICENSE",
     "pyproject.toml",
 ]
+# hatchling does not recursively read nested .gitignore files, so the dashboard's
+# own node_modules and pnpm cache slip past the default file walk when an
+# include pattern is set. Exclude them explicitly to keep the sdist small.
+exclude = [
+    "**/node_modules",
+    "**/.pnpm-store",
+    "**/*.log",
+    "**/tsconfig.tsbuildinfo",
+]
+
+# dashboard/dist is gitignored (Vite build artefact) so it is not picked up
+# by the default sdist file walk. Force-include it so the sdist is
+# self-contained: `pip install` from the sdist can rebuild the wheel
+# (whose own force-include above also requires this directory) without
+# needing Node or pnpm at install time.
+[tool.hatch.build.targets.sdist.force-include]
+"src/clickmem/dashboard/dist" = "src/clickmem/dashboard/dist"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
