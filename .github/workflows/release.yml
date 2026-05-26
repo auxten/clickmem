@@ -78,7 +78,7 @@ jobs:
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
           if [ -n "$(git status --porcelain pyproject.toml)" ]; then
             git add pyproject.toml
-            git commit -m "release: bump version to ${VERSION} [skip ci]"
+            git commit -m "release: bump version to ${VERSION}"
             git push origin main
           else
             echo "pyproject.toml already at ${VERSION} on main; skipping commit"
