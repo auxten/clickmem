@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clickmem"
-version = "1.0.0"
+version = "3.0.0"
 description = "Local-first explicit-memory system for AI coding agents, backed by chDB or ClickHouse Cloud."
 readme = "README.md"
 requires-python = ">=3.10"
