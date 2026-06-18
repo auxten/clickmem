@@ -193,7 +193,7 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                _log.exception("memory embedding worker failed: %s", e)
+                _log.warning("memory embedding worker failed: %s", e)
                 await asyncio.sleep(1.0)
 
     def _kick_memory_worker() -> None:
@@ -418,7 +418,7 @@ def create_app() -> FastAPI:
                 "warning": f"recall timed out after {body.timeout_seconds:.1f}s; continuing without memory context",
             }
         except Exception as e:  # noqa: BLE001
-            _log.exception("recall failed; continuing without memory context")
+            _log.warning("recall failed; continuing without memory context: %s", e)
             return {
                 "hits": [],
                 "timeout": False,
@@ -461,7 +461,7 @@ def create_app() -> FastAPI:
                 "warning": f"recall trace timed out after {body.timeout_seconds:.1f}s",
             }
         except Exception as e:  # noqa: BLE001
-            _log.exception("recall trace failed; continuing without memory context")
+            _log.warning("recall trace failed; continuing without memory context: %s", e)
             return {
                 "query": body.query,
                 "filters": {

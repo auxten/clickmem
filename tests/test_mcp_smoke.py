@@ -63,6 +63,18 @@ def test_mcp_tool_input_schemas_have_required_fields(backend):
             assert {"content", "project_id", "tags"}.issubset(set(params.get("required", [])))
 
 
+def test_mcp_sse_app_uses_mount_relative_routes(backend):
+    from clickmem.mcp_server import build_sse_app
+
+    app = build_sse_app()
+    paths = {getattr(route, "path", "") for route in getattr(app, "routes", [])}
+
+    assert "/" in paths
+    assert "/messages" in paths
+    assert "/sse" not in paths
+    assert "/sse/messages" not in paths
+
+
 def test_clickmem_remember_through_transport(backend):
     """``clickmem_remember`` is a thin wrapper around ``LocalTransport.remember``."""
     out = LocalTransport().remember("mcp smoke add", kind="fact", project_id="p1", tags=["test"])

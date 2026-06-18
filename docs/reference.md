@@ -15,8 +15,8 @@ clickmem dashboard open         # http://127.0.0.1:9527/dashboard
 
 ```bash
 clickmem remember "..." --project owner/repo --tag workflow
-clickmem list --project X --kind principle --json
-clickmem show <id>
+clickmem list --project-id X --kind principle --json
+clickmem show <id> --json
 clickmem edit <id> --content "..." --privacy public --pin
 clickmem forget <id> --reason "obsolete after deploy migration"
 clickmem pin <id>
@@ -24,8 +24,8 @@ clickmem blacklist add "internal-only stuff" --scope global --reason "leaks"
 clickmem blacklist add id:abc-123 --reason "outdated"
 clickmem conflicts
 clickmem resolve <id> --revise <peer_id>    # or --contract / --allow
-clickmem recall "your query" --project owner/repo --tag workflow --timeout-seconds 5
-clickmem recall-trace "your query" --project owner/repo --tag workflow
+clickmem recall "your query" --project owner/repo --tags workflow,deploy --timeout 5 --json
+clickmem recall-trace "your query" --project-id owner/repo --tag workflow --json
 clickmem get-raw <session_id> [--last N]
 ```
 
@@ -216,6 +216,8 @@ For Claude Code and Cursor MCP, swap the local URL for the LAN URL. The dashboar
 
 ## CLI To MCP Parity
 
+Agents should prefer MCP tools when available. When only shell access is available, use the CLI's `--json` flag on inspection commands so results are machine-readable. Project filters accept both `--project` and `--project-id`; recall timeouts accept both `--timeout` and `--timeout-seconds`; tag filters accept repeated `--tag` or comma-separated `--tags`.
+
 | CLI | MCP tool |
 | --- | --- |
 | `clickmem remember` | `clickmem_remember` |
@@ -267,6 +269,8 @@ Representative endpoints:
 | `CLICKMEM_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
 | `CLICKMEM_CONFLICT_THRESHOLD` | `0.92` | Cosine similarity above which divergent content is flagged as a conflict |
 | `CLICKMEM_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `CLICKMEM_MCP_ALLOWED_HOSTS` | `*` | Comma-separated allow-list for the MCP SSE Host header (DNS-rebinding protection). Default permits any host so LAN/Tailscale clients work; tighten per deployment. |
+| `CLICKMEM_MCP_ALLOWED_ORIGINS` | `*` | Comma-separated allow-list for the MCP SSE Origin header. |
 
 No `CLICKMEM_LLM_*` variables exist.
 

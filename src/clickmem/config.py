@@ -36,6 +36,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    items = [item.strip() for item in raw.split(",")]
+    return [item for item in items if item]
+
+
 @dataclass
 class Config:
     server_host: str = field(default_factory=lambda: os.environ.get("CLICKMEM_SERVER_HOST", "127.0.0.1"))
@@ -62,6 +70,16 @@ class Config:
         default_factory=lambda: _env_float("CLICKMEM_CONFLICT_THRESHOLD", 0.92)
     )
     log_level: str = field(default_factory=lambda: os.environ.get("CLICKMEM_LOG_LEVEL", "WARNING"))
+
+    # MCP SSE transport security (DNS-rebinding protection in mcp.server.fastmcp).
+    # Default to "*" so LAN/Tailscale hosts work out of the box; tighten via env
+    # in hardened deployments.
+    mcp_allowed_hosts: list[str] = field(
+        default_factory=lambda: _env_list("CLICKMEM_MCP_ALLOWED_HOSTS", ["*"])
+    )
+    mcp_allowed_origins: list[str] = field(
+        default_factory=lambda: _env_list("CLICKMEM_MCP_ALLOWED_ORIGINS", ["*"])
+    )
 
     def server_url(self) -> str:
         return f"http://{self.server_host}:{self.server_port}"

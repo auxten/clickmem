@@ -6,6 +6,8 @@ import glob
 import json
 import logging
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Any, Iterator, List
 
@@ -28,6 +30,7 @@ experimental = False
 
 _BASE = home() / ".codex"
 _HOOKS_JSON = _BASE / "hooks.json"
+_CLICKMEM_V1_ENDPOINTS = ("/v1/recall", "/v1/raw")
 
 
 def detect() -> bool:
@@ -131,8 +134,100 @@ def _save_hooks(data: dict[str, Any]) -> None:
     _HOOKS_JSON.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _config_toml() -> Path:
+    return _BASE / "config.toml"
+
+
+def _is_clickmem_v1_hook(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    url = str(entry.get("url", ""))
+    return any(endpoint in url for endpoint in _CLICKMEM_V1_ENDPOINTS)
+
+
+def _strip_clickmem_v1_hooks(hooks: dict[str, Any]) -> int:
+    """Remove ClickMem v1 hooks from both legacy and Codex Desktop schemas."""
+    removed = 0
+    for key in ("on_session_start", "on_session_end", "SessionStart", "Stop"):
+        entries = hooks.get(key)
+        if not isinstance(entries, list):
+            continue
+        kept: list[Any] = []
+        for entry in entries:
+            if _is_clickmem_v1_hook(entry):
+                removed += 1
+                continue
+            if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+                nested = [h for h in entry["hooks"] if not _is_clickmem_v1_hook(h)]
+                removed += len(entry["hooks"]) - len(nested)
+                if nested:
+                    new_entry = dict(entry)
+                    new_entry["hooks"] = nested
+                    kept.append(new_entry)
+                continue
+            kept.append(entry)
+        if kept:
+            hooks[key] = kept
+        else:
+            hooks.pop(key, None)
+    return removed
+
+
+def _clickmem_mcp_command() -> str:
+    path = shutil.which("clickmem-mcp")
+    if path:
+        return str(Path(path).resolve())
+    return str(Path(sys.executable).with_name("clickmem-mcp"))
+
+
+def _toml_quote(value: str) -> str:
+    return json.dumps(value)
+
+
+def _strip_toml_sections(text: str, section: str) -> str:
+    lines = text.splitlines()
+    out: list[str] = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            header = stripped.strip("[]").strip()
+            skipping = header == section or header.startswith(f"{section}.")
+        if not skipping:
+            out.append(line)
+    return "\n".join(out).rstrip()
+
+
+def _install_mcp_config(server_url: str) -> dict[str, Any]:
+    path = _config_toml()
+    command = _clickmem_mcp_command()
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    kept = _strip_toml_sections(existing, "mcp_servers.clickmem")
+    block = (
+        "[mcp_servers.clickmem]\n"
+        f"command = {_toml_quote(command)}\n"
+        "args = []\n\n"
+        "[mcp_servers.clickmem.env]\n"
+        f"CLICKMEM_REMOTE = {_toml_quote(server_url)}\n"
+    )
+    body = f"{kept}\n\n{block}" if kept else block
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.rstrip() + "\n", encoding="utf-8")
+    return {"ok": True, "path": str(path), "command": command, "remote": server_url}
+
+
+def _uninstall_mcp_config() -> dict[str, Any]:
+    path = _config_toml()
+    if not path.is_file():
+        return {"ok": True, "path": str(path), "removed": False}
+    existing = path.read_text(encoding="utf-8")
+    kept = _strip_toml_sections(existing, "mcp_servers.clickmem")
+    path.write_text(kept.rstrip() + ("\n" if kept else ""), encoding="utf-8")
+    return {"ok": True, "path": str(path), "removed": kept != existing.rstrip()}
+
+
 def install_hooks(server_url: str = "") -> dict[str, Any]:
-    """Write ``~/.codex/hooks.json`` with one ``on_session_end`` HTTP hook."""
+    """Write Codex Desktop hooks and stdio MCP config for ClickMem."""
     base = (server_url or os.environ.get("CLICKMEM_REMOTE") or base_url_default()).rstrip("/")
     data = _load_hooks()
     hooks = data.setdefault("hooks", {})
@@ -140,27 +235,40 @@ def install_hooks(server_url: str = "") -> dict[str, Any]:
     raw_url = f"{base}/v1/raw"
     recall_url = f"{base}/v1/recall"
 
-    hooks["on_session_start"] = [{"type": "http", "url": recall_url, "timeout": 5}]
-    hooks["on_session_end"] = [{"type": "http", "url": raw_url, "timeout": 15, "async": True}]
+    _strip_clickmem_v1_hooks(hooks)
+    hooks.setdefault("SessionStart", []).append({
+        "hooks": [{"type": "http", "url": recall_url, "timeout": 5}],
+    })
+    hooks.setdefault("Stop", []).append({
+        "hooks": [{"type": "http", "url": raw_url, "timeout": 15, "async": True}],
+    })
 
     _save_hooks(data)
-    return {"ok": True, "installed": True, "agent": name, "path": str(_HOOKS_JSON), "raw_url": raw_url}
+    mcp_config = _install_mcp_config(base)
+    return {
+        "ok": True,
+        "installed": True,
+        "agent": name,
+        "path": str(_HOOKS_JSON),
+        "raw_url": raw_url,
+        "recall_url": recall_url,
+        "mcp_config": mcp_config,
+    }
 
 
 def uninstall_hooks() -> dict[str, Any]:
     data = _load_hooks()
-    removed = []
+    removed: list[str] = []
     hooks = data.get("hooks", {}) or {}
-    for key in ("on_session_start", "on_session_end"):
-        if key in hooks:
-            hooks.pop(key, None)
-            removed.append(key)
+    removed_count = _strip_clickmem_v1_hooks(hooks)
+    if removed_count:
+        removed.append(f"{removed_count} clickmem hook entries")
     if hooks:
         data["hooks"] = hooks
     else:
         data.pop("hooks", None)
     _save_hooks(data)
-    return {"ok": True, "installed": False, "agent": name, "removed": removed}
+    return {"ok": True, "installed": False, "agent": name, "removed": removed, "mcp_config": _uninstall_mcp_config()}
 
 
 def export_blob(dst_path: Path) -> dict[str, Any]:

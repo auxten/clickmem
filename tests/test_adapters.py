@@ -486,6 +486,83 @@ def test_codex_empty_hooks_json_after_full_strip(fake_home):
     assert actual == {"version": 0, "hooks": {}}
 
 
+def test_codex_install_writes_desktop_hooks_and_mcp_config(fake_home, monkeypatch):
+    """Codex install uses current Desktop hook schema, preserves unrelated hooks,
+    removes old ClickMem v1 entries, and writes the ClickMem MCP config."""
+    monkeypatch.setattr(codex, "_clickmem_mcp_command", lambda: "/abs/bin/clickmem-mcp")
+    _write_json(codex._HOOKS_JSON, {
+        "hooks": {
+            "on_session_start": [{"type": "http", "url": "http://old/v1/recall", "timeout": 5}],
+            "SessionStart": [{
+                "hooks": [
+                    {"type": "command", "command": "vibe-island --source codex"},
+                    {"type": "http", "url": "http://old/v1/recall", "timeout": 5},
+                ],
+            }],
+            "Stop": [{
+                "hooks": [
+                    {"type": "command", "command": "vibe-island --source codex"},
+                    {"type": "http", "url": "http://old/v1/raw", "timeout": 15, "async": True},
+                ],
+            }],
+        },
+    })
+    config = fake_home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        '[mcp_servers.playwright]\ncommand = "npx"\n\n'
+        '[mcp_servers.clickmem]\ncommand = "/old/clickmem-mcp"\n',
+        encoding="utf-8",
+    )
+
+    result = codex.install_hooks("http://mini.local:9527")
+
+    assert result["ok"] is True
+    data = json.loads(codex._HOOKS_JSON.read_text(encoding="utf-8"))
+    hooks = data["hooks"]
+    assert "on_session_start" not in hooks
+    assert "on_session_end" not in hooks
+    assert hooks["SessionStart"][0]["hooks"] == [{"type": "command", "command": "vibe-island --source codex"}]
+    assert hooks["SessionStart"][1]["hooks"] == [
+        {"type": "http", "url": "http://mini.local:9527/v1/recall", "timeout": 5}
+    ]
+    assert hooks["Stop"][0]["hooks"] == [{"type": "command", "command": "vibe-island --source codex"}]
+    assert hooks["Stop"][1]["hooks"] == [
+        {"type": "http", "url": "http://mini.local:9527/v1/raw", "timeout": 15, "async": True}
+    ]
+
+    toml = config.read_text(encoding="utf-8")
+    assert "[mcp_servers.playwright]" in toml
+    assert toml.count("[mcp_servers.clickmem]") == 1
+    assert 'command = "/abs/bin/clickmem-mcp"' in toml
+    assert 'CLICKMEM_REMOTE = "http://mini.local:9527"' in toml
+
+
+def test_codex_install_is_idempotent_for_clickmem_entries(fake_home, monkeypatch):
+    monkeypatch.setattr(codex, "_clickmem_mcp_command", lambda: "/abs/bin/clickmem-mcp")
+
+    codex.install_hooks("http://mini.local:9527")
+    codex.install_hooks("http://mini.local:9527")
+
+    data = json.loads(codex._HOOKS_JSON.read_text(encoding="utf-8"))
+    assert len(data["hooks"]["SessionStart"]) == 1
+    assert len(data["hooks"]["Stop"]) == 1
+    toml = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert toml.count("[mcp_servers.clickmem]") == 1
+
+
+def test_codex_uninstall_removes_clickmem_hooks_and_mcp_config(fake_home, monkeypatch):
+    monkeypatch.setattr(codex, "_clickmem_mcp_command", lambda: "/abs/bin/clickmem-mcp")
+    codex.install_hooks("http://mini.local:9527")
+
+    result = codex.uninstall_hooks()
+
+    assert result["ok"] is True
+    data = json.loads(codex._HOOKS_JSON.read_text(encoding="utf-8"))
+    assert data == {}
+    assert not (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8").strip()
+
+
 def test_cursor_legacy_plugin_dir_removed(fake_home):
     """The ``~/.cursor/plugins/clickmem/`` legacy dir is detected and removed."""
     legacy = cursor._LEGACY_PLUGIN_DST
@@ -539,8 +616,12 @@ def test_v0_cleanup_is_idempotent(fake_home):
     })
     _write_json(codex._HOOKS_JSON, {
         "hooks": {
-            "on_session_start": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 5}],
-            "on_session_end": [{"type": "http", "url": "http://127.0.0.1:9527/v1/raw", "timeout": 15, "async": True}],
+            "SessionStart": [{
+                "hooks": [{"type": "http", "url": "http://127.0.0.1:9527/v1/recall", "timeout": 5}],
+            }],
+            "Stop": [{
+                "hooks": [{"type": "http", "url": "http://127.0.0.1:9527/v1/raw", "timeout": 15, "async": True}],
+            }],
         },
     })
 

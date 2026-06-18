@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from clickmem.config import get_config
 from clickmem.transport import get_transport
 
 
@@ -275,9 +276,43 @@ def _register_tools(server: FastMCP) -> None:
 def build_sse_app():
     """Return an ASGI app exposing the MCP SSE endpoint at the root.
 
-    Mounted by :mod:`clickmem.server` at ``/sse``.
+    Mounted by :mod:`clickmem.server` at ``/sse`` so the public URLs are::
+
+        GET  /sse/             -> SSE event stream
+        POST /sse/messages/    -> client-to-server messages
+
+    FastMCP's ``sse_app`` defaults route the SSE handler at ``/sse`` inside
+    the sub-app, which would double up to ``/sse/sse`` after our mount. We
+    move the handler to ``/`` and pass ``mount_path="/sse"`` so the URL
+    advertised in the SSE init event matches the public mount.
+
+    DNS-rebinding allow-lists are taken from
+    ``CLICKMEM_MCP_ALLOWED_HOSTS`` / ``CLICKMEM_MCP_ALLOWED_ORIGINS`` (default
+    ``["*"]`` so LAN/Tailscale hosts work without extra configuration).
     """
     server = _server()
+
+    server.settings.sse_path = "/"
+
+    cfg = get_config()
+    sec = server.settings.transport_security
+    hosts = list(cfg.mcp_allowed_hosts)
+    origins = list(cfg.mcp_allowed_origins)
+    # FastMCP's TransportSecurityMiddleware only knows literal hosts and
+    # ":*" port wildcards — it has no "any host" pattern. When the operator
+    # asks for "*" (also the default so LAN/Tailscale clients work), turn the
+    # DNS-rebinding check off entirely. Otherwise enforce the configured list.
+    if "*" in hosts and "*" in origins:
+        sec.enable_dns_rebinding_protection = False
+    else:
+        sec.enable_dns_rebinding_protection = True
+        sec.allowed_hosts = [h for h in hosts if h != "*"]
+        sec.allowed_origins = [o for o in origins if o != "*"]
+
+    # Don't pass ``mount_path`` here. SseServerTransport already prefixes the
+    # advertised messages URL with the ASGI ``root_path`` (which Starlette sets
+    # to "/sse" for us). Passing mount_path would bake "/sse" into _endpoint
+    # too and produce "/sse/sse/messages/" in the SSE init event.
     return server.sse_app()
 
 

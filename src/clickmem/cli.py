@@ -24,7 +24,6 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.json import JSON
 from rich.table import Table
 
 from clickmem import __version__
@@ -57,9 +56,20 @@ def _print(value, raw_json: bool = False) -> None:
         console.print_json(data=value)
         return
     if isinstance(value, (dict, list)):
-        console.print(JSON.from_data(value))
+        console.print_json(data=value)
     else:
         console.print(value)
+
+
+def _normalize_tags(*groups: list[str]) -> list[str]:
+    tags: list[str] = []
+    for group in groups:
+        for raw in group or []:
+            for part in str(raw).split(","):
+                tag = part.strip()
+                if tag:
+                    tags.append(tag)
+    return tags
 
 
 def _resolve_memory_scope(project_id: Optional[str], global_scope: bool) -> str:
@@ -71,11 +81,20 @@ def _resolve_memory_scope(project_id: Optional[str], global_scope: bool) -> str:
 
 
 def _require_tags(tags: list[str]) -> list[str]:
-    cleaned = [t.strip() for t in tags if t.strip()]
+    cleaned = _normalize_tags(tags)
     if not cleaned:
         console.print(f"[red]{_MEMORY_METADATA_HELP}[/red]")
         raise typer.Exit(code=2)
     return cleaned
+
+
+def _probe_http_health(url: str, api_key: str | None) -> dict[str, object]:
+    from clickmem.transport import RemoteTransport
+
+    try:
+        return RemoteTransport(url, api_key=api_key, timeout=3.0).health()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "url": url, "error": str(e)}
 
 
 # ---------- core revision operations --------------------------------------
@@ -89,6 +108,7 @@ def remember(
     global_scope: bool = typer.Option(False, "--global", help="explicitly write a global memory"),
     privacy: str = typer.Option("private", help="public | private | confidential"),
     tag: list[str] = typer.Option([], "--tag", help="repeatable tag value"),
+    tags: list[str] = typer.Option([], "--tags", help="comma-separated tag values"),
     pinned: bool = typer.Option(False, "--pin/--no-pin", help="pin on commit"),
     source: str = typer.Option("cli"),
     source_ref: str = typer.Option(""),
@@ -96,13 +116,13 @@ def remember(
 ) -> None:
     """Expand: commit a new memory."""
     resolved_project = _resolve_memory_scope(project_id, global_scope)
-    tags = _require_tags(list(tag))
+    normalized_tags = _require_tags(_normalize_tags(tag, tags))
     result = get_transport().remember(
         content,
         kind=kind,
         project_id=resolved_project,
         privacy=privacy,
-        tags=tags,
+        tags=normalized_tags,
         pinned=pinned,
         source=source,
         source_ref=source_ref,
@@ -119,6 +139,7 @@ def edit(
     privacy: Optional[str] = typer.Option(None),
     project_id: Optional[str] = typer.Option(None),
     tag: list[str] = typer.Option([], "--tag", help="replace tag list"),
+    tags: list[str] = typer.Option([], "--tags", help="comma-separated replacement tags"),
     pinned: Optional[bool] = typer.Option(None, "--pin/--no-pin"),
     agent: str = typer.Option(""),
 ) -> None:
@@ -132,8 +153,9 @@ def edit(
         kwargs["privacy"] = privacy
     if project_id is not None:
         kwargs["project_id"] = project_id
-    if tag:
-        kwargs["tags"] = list(tag)
+    normalized_tags = _normalize_tags(tag, tags)
+    if normalized_tags:
+        kwargs["tags"] = normalized_tags
     if pinned is not None:
         kwargs["pinned"] = pinned
     _print(get_transport().edit(memory_id, **kwargs))
@@ -167,15 +189,17 @@ def unpin(memory_id: str = typer.Argument(...), agent: str = typer.Option("")) -
 @app.command()
 def recall(
     query: str = typer.Argument(...),
-    project_id: str = typer.Option(""),
+    project_id: str = typer.Option("", "--project", "--project-id"),
     limit: int = typer.Option(10),
     cross_project: bool = typer.Option(False, "--cross-project"),
     include_confidential: bool = typer.Option(False, "--include-confidential"),
     kind: Optional[str] = typer.Option(None),
     tag: list[str] = typer.Option([], "--tag", help="repeatable tag filter"),
+    tags: list[str] = typer.Option([], "--tags", help="comma-separated tag filters"),
     tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
-    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", help="fail-open recall timeout"),
+    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
     agent: str = typer.Option(""),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
 ) -> None:
     """Run embedding recall against the brain."""
     res = get_transport().recall(
@@ -185,11 +209,14 @@ def recall(
         include_confidential=include_confidential,
         cross_project=cross_project,
         kind=kind,
-        tags=list(tag),
+        tags=_normalize_tags(tag, tags),
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
         agent=agent,
     )
+    if raw_json:
+        _print(res, raw_json=True)
+        return
     hits = res.get("hits", [])
     if not hits:
         if res.get("warning"):
@@ -220,14 +247,16 @@ def recall(
 @app.command("recall-trace")
 def recall_trace_cmd(
     query: str = typer.Argument(...),
-    project_id: str = typer.Option(""),
+    project_id: str = typer.Option("", "--project", "--project-id"),
     limit: int = typer.Option(10),
     cross_project: bool = typer.Option(False, "--cross-project"),
     include_confidential: bool = typer.Option(False, "--include-confidential"),
     kind: Optional[str] = typer.Option(None),
     tag: list[str] = typer.Option([], "--tag", help="repeatable tag filter"),
+    tags: list[str] = typer.Option([], "--tags", help="comma-separated tag filters"),
     tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
-    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", help="fail-open recall timeout"),
+    timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
 ) -> None:
     """Recall with per-candidate scoring breakdown."""
     _print(get_transport().recall_trace(
@@ -237,10 +266,10 @@ def recall_trace_cmd(
         include_confidential=include_confidential,
         cross_project=cross_project,
         kind=kind,
-        tags=list(tag),
+        tags=_normalize_tags(tag, tags),
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
-    ))
+    ), raw_json=raw_json)
 
 
 @app.command()
@@ -248,14 +277,15 @@ def show(
     memory_id: str = typer.Argument(...),
     history: bool = typer.Option(False, "--history"),
     neighbors: bool = typer.Option(False, "--neighbors"),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
 ) -> None:
     """Show a single memory; optionally history and neighbours."""
-    _print(get_transport().show(memory_id, with_history=history, with_neighbors=neighbors))
+    _print(get_transport().show(memory_id, with_history=history, with_neighbors=neighbors), raw_json=raw_json)
 
 
 @app.command("list")
 def list_cmd(
-    project_id: Optional[str] = typer.Option(None, "--project"),
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
     privacy: Optional[str] = typer.Option(None, "--privacy"),
     kind: Optional[str] = typer.Option(None, "--kind"),
     status: Optional[str] = typer.Option(None, "--status"),
@@ -264,6 +294,7 @@ def list_cmd(
     search: Optional[str] = typer.Option(None, "--search"),
     offset: int = typer.Option(0),
     limit: int = typer.Option(50),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
 ) -> None:
     """List memories with filters."""
     _print(get_transport().list_memories(
@@ -276,13 +307,16 @@ def list_cmd(
         search=search,
         offset=offset,
         limit=limit,
-    ))
+    ), raw_json=raw_json)
 
 
 @app.command()
-def conflicts(project_id: Optional[str] = typer.Option(None, "--project")) -> None:
+def conflicts(
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+) -> None:
     """List unresolved conflicts."""
-    _print(get_transport().conflicts(project_id=project_id))
+    _print(get_transport().conflicts(project_id=project_id), raw_json=raw_json)
 
 
 @app.command()
@@ -310,9 +344,10 @@ def get_raw_cmd(
     session_id: Optional[str] = typer.Argument(None),
     last: int = typer.Option(50, "--last"),
     agent: Optional[str] = typer.Option(None),
+    raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
 ) -> None:
     """Retrieve raw transcripts (cold storage; never used by recall)."""
-    _print(get_transport().get_raw(session_id=session_id, last=last, agent=agent))
+    _print(get_transport().get_raw(session_id=session_id, last=last, agent=agent), raw_json=raw_json)
 
 
 # ---------- blacklist -----------------------------------------------------
@@ -384,8 +419,15 @@ app.add_typer(service_app, name="service")
 
 
 @service_app.command("install")
-def service_install() -> None:
+def service_install(
+    host: Optional[str] = typer.Option(None, "--host", help="override CLICKMEM_SERVER_HOST in the service unit"),
+    port: Optional[int] = typer.Option(None, "--port", help="override CLICKMEM_SERVER_PORT in the service unit"),
+) -> None:
     """Install the launchd (macOS) / systemd --user (Linux) unit."""
+    if host:
+        os.environ["CLICKMEM_SERVER_HOST"] = host
+    if port:
+        os.environ["CLICKMEM_SERVER_PORT"] = str(port)
     from clickmem import service as service_mod
 
     _print(service_mod.install())
@@ -405,16 +447,24 @@ def service_status() -> None:
     from clickmem import service as service_mod
 
     cfg = get_config(refresh=True)
+    local_url = cfg.server_url()
+    remote_url = (cfg.remote_url or "").rstrip("/")
+    local_health = _probe_http_health(local_url, cfg.api_key)
+    remote_health = _probe_http_health(remote_url, cfg.api_key) if remote_url else None
     info: dict[str, object] = {
         "config_host": cfg.server_host,
         "config_port": cfg.server_port,
         "remote_url": cfg.remote_url or "",
-        "service": service_mod.status(),
+        "active_transport": {
+            "kind": "remote" if remote_url else "local",
+            "url": remote_url if remote_url else "",
+            "note": "local CLI transport is in-process; local_health probes the HTTP service",
+        },
+        "local_service": service_mod.status(),
+        "local_health": local_health,
     }
-    try:
-        info["health"] = get_transport().health()
-    except Exception as e:  # noqa: BLE001
-        info["health_error"] = str(e)
+    if remote_health is not None:
+        info["remote_health"] = remote_health
     _print(info)
 
 
@@ -503,7 +553,7 @@ def import_cmd(
 def export_cmd(
     out: Path = typer.Option(Path("clickmem-export.jsonl"), "--out"),
     fmt: str = typer.Option("jsonl", "--format", help="jsonl | markdown"),
-    project_id: Optional[str] = typer.Option(None, "--project"),
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
     privacy: Optional[str] = typer.Option(None, "--privacy"),
     since: Optional[str] = typer.Option(None),
 ) -> None:

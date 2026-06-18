@@ -21,7 +21,7 @@ metadata:
 
 # ClickMem — Explicit Memory for AI Agents
 
-ClickMem is a *belief-revision* memory store. Memories enter only when the agent (or the user) deliberately commits one. There is **no auto-extraction**, no LLM in the server loop, no automatic context injection. You read and write through MCP tools or the `clickmem` CLI; both expose the same operations and back the same chDB (or ClickHouse Cloud) store on `http://127.0.0.1:9527`.
+ClickMem is a *belief-revision* memory store. Memories enter only when the agent (or the user) deliberately commits one. There is **no auto-extraction**, no LLM in the server loop, no automatic context injection. Prefer MCP tools when they are available; otherwise use the `clickmem` CLI with `--json` for inspection commands. Both expose the same operations and back the same chDB (or ClickHouse Cloud) store on `http://127.0.0.1:9527` or the configured `CLICKMEM_REMOTE`.
 
 All memory writes must carry explicit management metadata: either a concrete `project_id` such as `auxten/clickmem` or the literal `global`, plus at least one tag. Project and privacy scope are never guessed on write; recall still defaults to the current project + global unless overridden.
 
@@ -83,6 +83,14 @@ Example MCP call:
 }
 ```
 
+Shell fallback when MCP tools are unavailable:
+
+```bash
+clickmem recall "deploy current project and commit code" \
+  --project auxten/clickmem --tags deployment,git,workflow --tag-mode any \
+  --limit 10 --timeout 5 --agent codex --json
+```
+
 ---
 
 ## The five operations
@@ -99,10 +107,10 @@ Inspection helpers (same parity):
 
 | | CLI | MCP tool |
 |---|-----|----------|
-| Recall | `clickmem recall "<query>"` | `clickmem_recall` |
-| Show + history | `clickmem show <id> --history` | `clickmem_show` |
-| List filtered | `clickmem list --project --kind --status` | `clickmem_list` |
-| Conflicts queue | `clickmem conflicts` | `clickmem_conflicts` |
+| Recall | `clickmem recall "<query>" --project owner/repo --tags workflow --timeout 5 --json` | `clickmem_recall` |
+| Show + history | `clickmem show <id> --history --json` | `clickmem_show` |
+| List filtered | `clickmem list --project-id owner/repo --kind decision --status active --json` | `clickmem_list` |
+| Conflicts queue | `clickmem conflicts --json` | `clickmem_conflicts` |
 | Resolve a conflict | `clickmem resolve <id> --revise <peer>` | `clickmem_resolve` |
 | Get cold raw | `clickmem get-raw <session_id>` | `clickmem_get_raw` |
 | Recall scoring | `clickmem recall-trace "<query>"` | `clickmem_recall_trace` |
@@ -144,13 +152,13 @@ clickmem service install
 clickmem hooks install                # installs hooks for every detected agent
 
 # Day-to-day
-clickmem recall "deploy pipeline"
+clickmem recall "deploy pipeline" --project auxten/clickmem --tags deployment,workflow --timeout 5 --json
 clickmem remember "Use uv for Python venv management on this repo" --project auxten/clickmem --tag tooling --kind principle
-clickmem conflicts                     # any unresolved pairs?
-clickmem show <id> --history           # how did this memory evolve?
+clickmem conflicts --json              # any unresolved pairs?
+clickmem show <id> --history --json    # how did this memory evolve?
 
 # Management
-clickmem list --project current --kind decision --status active
+clickmem list --project-id current --kind decision --status active --json
 clickmem pin <id>                      # mark authoritative
 clickmem blacklist add "internal-hostname.example.com"
 clickmem dashboard open                # opens /dashboard in browser

@@ -329,6 +329,21 @@ def t1_2_service_install(*, keep: bool = False) -> CheckResult:
 # ---------- T1.3 -----------------------------------------------------------
 
 
+def _codex_nested_hook_urls(entries: object) -> set[str]:
+    urls: set[str] = set()
+    if not isinstance(entries, list):
+        return urls
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        nested = entry.get("hooks")
+        hook_items = nested if isinstance(nested, list) else [entry]
+        for hook in hook_items:
+            if isinstance(hook, dict) and hook.get("type") == "http" and hook.get("url"):
+                urls.add(str(hook["url"]))
+    return urls
+
+
 def t1_3_hooks_install(*, keep: bool = False) -> CheckResult:
     res = CheckResult(id="T1.3", title="Hooks install on fake $HOME")
     t0 = time.time()
@@ -381,18 +396,33 @@ def t1_3_hooks_install(*, keep: bool = False) -> CheckResult:
 
             # codex hooks.json
             codex_hooks = fake / ".codex" / "hooks.json"
+            codex_config = fake / ".codex" / "config.toml"
             if not codex_hooks.is_file():
                 findings.append("codex hooks.json missing")
             else:
                 try:
                     data = json.loads(codex_hooks.read_text())
                     hooks = data.get("hooks", {}) or {}
-                    if "on_session_end" not in hooks:
-                        findings.append("codex hooks: on_session_end missing")
+                    recall_urls = _codex_nested_hook_urls(hooks.get("SessionStart", []))
+                    stop_urls = _codex_nested_hook_urls(hooks.get("Stop", []))
+                    if f"{url}/v1/recall" not in recall_urls:
+                        findings.append("codex hooks: SessionStart /v1/recall hook missing")
+                    if f"{url}/v1/raw" not in stop_urls:
+                        findings.append("codex hooks: Stop /v1/raw hook missing")
+                    if "on_session_start" in hooks or "on_session_end" in hooks:
+                        findings.append("codex hooks: legacy on_session_start/on_session_end still present")
                     if "/hooks/claude-code" in codex_hooks.read_text():
                         findings.append("codex hooks still references /hooks/claude-code (v0)")
                 except Exception as e:  # noqa: BLE001
                     findings.append(f"codex hooks.json unparseable: {e}")
+            if not codex_config.is_file():
+                findings.append("codex config.toml missing")
+            else:
+                config_text = codex_config.read_text()
+                if "[mcp_servers.clickmem]" not in config_text:
+                    findings.append("codex config.toml missing mcp_servers.clickmem")
+                if f'CLICKMEM_REMOTE = "{url}"' not in config_text:
+                    findings.append("codex config.toml missing CLICKMEM_REMOTE for install URL")
 
             # cursor hooks — canonical v1 path is ~/.cursor/hooks/clickmem
             cursor_v1 = fake / ".cursor" / "hooks" / "clickmem"
@@ -405,6 +435,7 @@ def t1_3_hooks_install(*, keep: bool = False) -> CheckResult:
 
             res.extras["claude_settings"] = str(claude_settings)
             res.extras["codex_hooks"] = str(codex_hooks)
+            res.extras["codex_config"] = str(codex_config)
             res.extras["cursor_dir"] = str(cursor_v1)
 
             # Idempotency: install2 should not append duplicates — file content

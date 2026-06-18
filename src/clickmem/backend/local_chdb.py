@@ -15,7 +15,13 @@ import time
 from pathlib import Path
 from typing import Any, List
 
-from clickmem.schema import ann_index_statements, bootstrap_statements, memories_rekey_to_id_statements
+from clickmem.schema import (
+    MEMORIES_COLUMNS,
+    ann_index_statements,
+    bootstrap_statements,
+    memories_ddl,
+    memories_rekey_to_id_statements,
+)
 from clickmem.sqlutil import quote_array_float
 
 
@@ -62,8 +68,47 @@ class LocalBackend:
 
     def _bootstrap(self) -> None:
         for stmt in bootstrap_statements(self.embed_dim):
-            self.execute(stmt)
+            try:
+                self.execute(stmt)
+            except Exception as e:  # noqa: BLE001
+                if _is_memories_create(stmt) and _is_table_exists_error(e):
+                    self._attach_existing_memories_table()
+                    continue
+                raise
         self._migrate_memories_sorting_key()
+
+    def _attach_existing_memories_table(self) -> None:
+        """Recover chDB tables whose data directory exists but metadata is absent.
+
+        chDB can leave ``data/default/memories`` behind while a new session's
+        overlay metadata no longer lists the table. A plain CREATE then raises
+        TABLE_ALREADY_EXISTS and the following ALTERs see UNKNOWN_TABLE. Attach
+        with the old sorting key first so legacy indexes can still be read and
+        migrated to the current id-only key.
+        """
+        if self._table_visible("memories"):
+            return
+
+        last_err: Exception | None = None
+        for ddl in _memories_attach_candidates(self.embed_dim):
+            try:
+                self.execute(ddl)
+                self.query("SELECT id, content, project_id, kind FROM memories LIMIT 1")
+                return
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                try:
+                    self.execute("DETACH TABLE IF EXISTS memories")
+                except Exception:
+                    pass
+        raise RuntimeError(f"Could not attach existing chDB memories table: {last_err}")
+
+    def _table_visible(self, name: str) -> bool:
+        try:
+            rows = self.query(f"SELECT name FROM system.tables WHERE name = '{name}' LIMIT 1")
+        except Exception:
+            return False
+        return bool(rows)
 
     def _migrate_memories_sorting_key(self) -> None:
         try:
@@ -76,7 +121,24 @@ class LocalBackend:
             return
         _log.warning("migrating memories sorting key from %s to id", sorting_key)
         for stmt in memories_rekey_to_id_statements(self.embed_dim):
-            self.execute(stmt)
+            try:
+                self.execute(stmt)
+            except Exception as e:  # noqa: BLE001
+                if _is_rename_table(stmt) and _is_rename_not_supported(e):
+                    self._migrate_memories_sorting_key_without_rename()
+                    return
+                raise
+
+    def _migrate_memories_sorting_key_without_rename(self) -> None:
+        tmp = "memories__id_order_tmp"
+        backup = "memories__project_kind_id_backup"
+        self.execute(f"DROP TABLE IF EXISTS {backup}")
+        self.execute(f"CREATE TABLE {backup} AS memories")
+        self.execute(f"INSERT INTO {backup} SELECT * FROM memories")
+        self.execute("DROP TABLE memories")
+        self.execute(memories_ddl(self.embed_dim))
+        self.execute(f"INSERT INTO memories ({MEMORIES_COLUMNS}) SELECT {MEMORIES_COLUMNS} FROM {tmp} FINAL")
+        self.execute(f"DROP TABLE IF EXISTS {tmp}")
 
     def query(self, sql: str) -> List[dict[str, Any]]:
         with _LOCK:
@@ -147,3 +209,35 @@ def _parse_json_each_row(text: str) -> List[dict[str, Any]]:
             _log.debug("skipping non-JSON row: %r", line[:120])
             continue
     return rows
+
+
+def _is_create_if_not_exists(sql: str) -> bool:
+    return "CREATE TABLE IF NOT EXISTS" in " ".join(sql.upper().split())
+
+
+def _is_memories_create(sql: str) -> bool:
+    normalized = " ".join(sql.upper().split())
+    return normalized.startswith("CREATE TABLE IF NOT EXISTS MEMORIES ")
+
+
+def _is_table_exists_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return "TABLE_ALREADY_EXISTS" in msg or "Directory for table data" in msg
+
+
+def _is_rename_table(sql: str) -> bool:
+    return " ".join(sql.upper().split()).startswith("RENAME TABLE ")
+
+
+def _is_rename_not_supported(exc: Exception) -> bool:
+    msg = str(exc)
+    return "renameTable() is not supported" in msg or "NOT_IMPLEMENTED" in msg
+
+
+def _memories_attach_candidates(embed_dim: int) -> list[str]:
+    current = memories_ddl(embed_dim)
+    old = current.replace("ORDER BY id", "ORDER BY (project_id, kind, id)", 1)
+    return [
+        old.replace("CREATE TABLE IF NOT EXISTS", "ATTACH TABLE", 1),
+        current.replace("CREATE TABLE IF NOT EXISTS", "ATTACH TABLE", 1),
+    ]
