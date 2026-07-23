@@ -75,6 +75,15 @@ def get_backend(refresh: bool = False) -> Backend:
             database=cfg.ch_database,
             embed_dim=cfg.embedding_dim,
         )
+    elif choice in ("durable", "dao"):
+        from clickmem.backend.durable import DurableBackend
+
+        _singleton = DurableBackend(
+            url=cfg.durable_url,
+            oid=cfg.durable_id,
+            embed_dim=cfg.embedding_dim,
+            db=cfg.ch_database,
+        )
     else:
         raise ValueError(f"Unknown CLICKMEM_BACKEND: {choice!r}")
 

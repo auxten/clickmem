@@ -60,6 +60,9 @@ class Config:
     ch_user: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_USER") or None)
     ch_password: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_PASSWORD") or None)
     ch_database: str = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_DATABASE", "clickmem"))
+    # durable backend (chdb.durable): object store + this memory's object id
+    durable_url: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_DURABLE_URL") or None)
+    durable_id: str = field(default_factory=lambda: os.environ.get("CLICKMEM_DURABLE_ID", "default"))
 
     embedding_model: str = field(
         default_factory=lambda: os.environ.get("CLICKMEM_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
