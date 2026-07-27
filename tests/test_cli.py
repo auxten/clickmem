@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import tomllib
 from pathlib import Path
+
+try:  # tomllib is stdlib on 3.11+; fall back to tomli on 3.10
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib
 
 from typer.testing import CliRunner
 

@@ -6,6 +6,7 @@ these helpers when building DDL/DML strings.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
 
@@ -56,4 +57,13 @@ def multi_search_any_ci(column: str, needles: Sequence[str]) -> str:
 
 
 def utc_now_sql() -> str:
-    return "now64(3, 'UTC')"
+    """Current UTC time as a DateTime64(3) literal, evaluated in Python.
+
+    A literal (not ``now64()``) so every write statement is deterministic:
+    the durable backend persists statements to a write-ahead log and replays
+    them after a crash, and a server-evaluated ``now64()`` would produce a
+    different value on replay — drifting ``updated_at``, which is the
+    ReplacingMergeTree version column that decides which row wins dedup.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return f"toDateTime64('{ts}', 3, 'UTC')"

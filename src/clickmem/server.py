@@ -185,6 +185,13 @@ def create_app() -> FastAPI:
                     pass
                 event.clear()
 
+                # ship any deferred audit writes that have waited too long
+                # (no-op for backends that never defer)
+                try:
+                    await asyncio.to_thread(get_backend().maybe_flush)
+                except Exception as e:  # noqa: BLE001
+                    _log.debug("maybe_flush failed: %s", e)
+
                 while True:
                     result = await asyncio.to_thread(memories_mod.process_pending_embeddings, 32)
                     if int(result.get("processed", 0) or 0) == 0:

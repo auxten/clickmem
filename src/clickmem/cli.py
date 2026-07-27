@@ -396,6 +396,43 @@ def project_list_cmd() -> None:
     _print(get_transport().projects_list())
 
 
+store_app = typer.Typer(
+    help="Memory stores: list them, switch, create. A store is one whole "
+         "memory database; your selection is recorded per user in "
+         "~/.clickmem/stores.json (never in the repository).",
+    no_args_is_help=True,
+)
+app.add_typer(store_app, name="store")
+
+
+@store_app.command("list")
+def store_list_cmd() -> None:
+    """Show available stores for the configured backend."""
+    from clickmem.stores import store_list
+
+    _print(store_list())
+
+
+@store_app.command("use")
+def store_use_cmd(store_id: str = typer.Argument(...)) -> None:
+    """Switch to a store (applies on next service/process start)."""
+    from clickmem.stores import store_use
+
+    _print(store_use(store_id))
+
+
+@store_app.command("new")
+def store_new_cmd(
+    name: str = typer.Argument("", help="readable name; defaults to the current repo's project"),
+    store_id: str = typer.Option("", "--id", help="exact id (skips name sanitising)"),
+    description: str = typer.Option("", "--desc", help="shown in `store list`"),
+) -> None:
+    """Create a fresh empty store and switch to it."""
+    from clickmem.stores import store_new
+
+    _print(store_new(name, store_id=store_id, description=description))
+
+
 # ---------- operational ---------------------------------------------------
 
 
