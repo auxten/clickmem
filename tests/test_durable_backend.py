@@ -26,6 +26,37 @@ def _n(rows):
     return int(rows[0]["c"])
 
 
+def crash_replay_and_lease():
+    """Crash (no close) → lease blocks reopen with a clear hint → force takeover
+    replays the WAL and timestamps survive byte-identical (utc_now_sql is a
+    Python-evaluated literal, so replayed statements are deterministic)."""
+    from clickmem.sqlutil import utc_now_sql
+
+    url = "local:" + tempfile.mkdtemp(prefix="clickmem-dao-crash-")
+    b = DurableBackend(url, "crash-1", embed_dim=4, db="clickmem")
+    ts = utc_now_sql()
+    assert ts.startswith("toDateTime64('"), ts  # literal, not server-side now64
+    b.execute("CREATE TABLE r (id String, updated_at DateTime64(3, 'UTC')) "
+              "ENGINE=ReplacingMergeTree(updated_at) ORDER BY id")
+    b.execute(f"INSERT INTO r VALUES ('x', {ts})")
+    before = b.query("SELECT toString(updated_at) AS t FROM r")[0]["t"]
+
+    b._obj.session.close()  # simulate a crash: no checkpoint, lease not released
+
+    try:
+        DurableBackend(url, "crash-1", embed_dim=4, db="clickmem")
+        raise AssertionError("expected LeaseError on reopen after crash")
+    except Exception as e:
+        assert "force=True" in str(e), e  # guidance present in the message
+
+    b2 = DurableBackend(url, "crash-1", embed_dim=4, db="clickmem", force=True)
+    after = b2.query("SELECT toString(updated_at) AS t FROM r")[0]["t"]
+    assert after == before, (before, after)  # WAL replay reproduced the timestamp
+    b2.close()
+    shutil.rmtree(url.split(":", 1)[1], ignore_errors=True)
+    print("crash replay + lease hint: deterministic timestamps PASS")
+
+
 def main():
     b = _open()
     # bootstrap ran (clickmem's memories table exists); use a small table for the check
@@ -55,3 +86,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    crash_replay_and_lease()

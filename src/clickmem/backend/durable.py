@@ -4,11 +4,19 @@ Same `query` / `execute` / `vector_search` / `close` contract as the local
 chDB backend, but the memory database lives in a Durable Analytical Object:
 its state is checkpointed to object storage you own (S3 / GCS / Azure Blob /
 any S3-compatible / a local folder), single-writer, and portable across hosts.
-That's the third tier alongside `LocalBackend` (ephemeral, in-process) and
-`ClickHouseBackend` (needs a server): durable, but serverless.
+That's the third tier alongside `LocalBackend` (persistent but bound to one
+machine) and `ClickHouseBackend` (needs a server): durable, portable,
+serverless.
 
 Selected by `CLICKMEM_BACKEND=durable` with `CLICKMEM_DURABLE_URL` (the object
 store) and `CLICKMEM_DURABLE_ID` (this memory's object id).
+
+Single-writer lease: one live process owns an object at a time. If the
+previous process crashed without releasing (no `close()`), reopening raises
+`chdb.durable.LeaseError` until its lease expires (~60s). Either wait it out
+or, once you are sure the old process is dead, construct with `force=True`
+to take over immediately — a fenced-off old writer can no longer commit, so
+takeover is safe.
 """
 from __future__ import annotations
 
@@ -26,16 +34,26 @@ class DurableBackend:
     """chDB memory whose authoritative state is a durable object."""
 
     def __init__(self, url: str, oid: str, embed_dim: int = 256,
-                 db: str = "clickmem", owner: Optional[str] = None) -> None:
+                 db: str = "clickmem", owner: Optional[str] = None,
+                 force: bool = False) -> None:
         from chdb import durable as cd
 
         self.embed_dim = embed_dim
         self._db = db
         self._ns = cd.Namespace(url, owner=owner or "clickmem", db=db)
-        self._obj = self._ns.open(oid)
+        try:
+            self._obj = self._ns.open(oid, force=force)
+        except cd.LeaseError as e:
+            raise cd.LeaseError(
+                f"memory object {oid!r} is lease-locked ({e}). Another clickmem "
+                f"process may be using it — or a previous one crashed without "
+                f"closing. Wait for the lease to expire (~60s), or pass "
+                f"force=True once you are sure the old process is dead."
+            ) from e
         # clickmem tables are unqualified, so they resolve to the session's
-        # current database — point it at the DAO's db, which its checkpoint /
-        # restore captures. Run via query() so it is not written to the WAL.
+        # current database — point the live session at the DAO's db. Run via
+        # query() so it is not written to the WAL: replay restores this context
+        # itself (chdb.durable replays with the manifest's db as current).
         self._obj.query(f"USE {db}")
         self._bootstrap()
 
