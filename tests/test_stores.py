@@ -3,11 +3,19 @@
 Runs against a temp HOME so the real ~/.clickmem is never touched.
 """
 import importlib
+import importlib.util
 import json
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# The durable store paths need chdb.durable, which is merged into chDB but not
+# yet in a released wheel — skip those until a chdb release ships it.
+durable_only = pytest.mark.skipif(
+    importlib.util.find_spec("chdb.durable") is None,
+    reason="chdb.durable not in this chdb release yet",
+)
 
 
 @pytest.fixture()
@@ -53,6 +61,7 @@ def test_config_reads_active_record(home, monkeypatch):
     assert config.get_config(refresh=True).durable_id == "env-store"  # env wins
 
 
+@durable_only
 def test_durable_catalog_upsert_and_list(home, monkeypatch):
     _, stores = home
     url = "local:" + tempfile.mkdtemp(prefix="clickmem-cat-")
@@ -76,6 +85,7 @@ def test_durable_catalog_upsert_and_list(home, monkeypatch):
     assert ids == {"shawn-main", "foo-team"}
 
 
+@durable_only
 def test_store_new_durable_creates_and_switches(home, monkeypatch):
     _, stores = home
     url = "local:" + tempfile.mkdtemp(prefix="clickmem-new-")

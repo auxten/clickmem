@@ -177,12 +177,27 @@ clickmem hooks install --agent claude-code
 
 ## Storage Backends
 
-Choose the backend at server start with `CLICKMEM_BACKEND`. Schema is identical across both.
+Choose the backend at server start with `CLICKMEM_BACKEND`. The schema is identical across all three.
 
 | Backend | Use when | Configuration |
 | --- | --- | --- |
 | chDB (default) | Single-machine or LAN-shared from one host | `CLICKMEM_BACKEND=local`; `CLICKMEM_DB_PATH=~/.clickmem/data` |
 | ClickHouse Cloud / self-hosted | Multi-device without a relay host, or larger-than-disk corpora | `CLICKMEM_BACKEND=clickhouse` plus ClickHouse connection variables |
+| Durable (object storage) | Persistent memory that follows you across machines/restarts without running a server (agents in Lambda, CI, sandboxes) | `CLICKMEM_BACKEND=durable`; `CLICKMEM_DURABLE_URL=s3://bucket/prefix` (or `gs://`, `az://`, `local:/path`); `CLICKMEM_DURABLE_ID=<store>` |
+
+The durable backend keeps the database in object storage you own: memory writes are saved before they return, recall reads a local copy, and one writer holds the store at a time. It requires a `chdb` release that ships `chdb.durable` — until then it stays inactive.
+
+### Selecting a store (durable / local)
+
+A *store* is one whole memory database. Your active choice is recorded per user in `~/.clickmem/stores.json` (never in the repo, so teammates can keep separate memories for the same project). The environment variable, when set, always wins over the record.
+
+| Command | MCP | Does |
+| --- | --- | --- |
+| `clickmem store list` | `clickmem_store(op="list")` | Show available stores for the current backend |
+| `clickmem store use <id>` | `clickmem_store(op="use", id=...)` | Switch stores (applies on next start) |
+| `clickmem store new [--id NAME] [--desc TEXT]` | `clickmem_store(op="new", id=..., description=...)` | Create a fresh empty store and switch to it |
+
+One store holds any number of projects — use `--project`/`project_id` for per-project scoping, not one store per project.
 
 ## Import And Export
 
@@ -232,6 +247,7 @@ Agents should prefer MCP tools when available. When only shell access is availab
 | `clickmem get-raw` | `clickmem_get_raw` |
 | `clickmem recall-trace` | `clickmem_recall_trace` |
 | `clickmem project link` | `clickmem_project` |
+| `clickmem store list/use/new` | `clickmem_store` |
 
 ## REST Surface
 
@@ -260,12 +276,14 @@ Representative endpoints:
 | `CLICKMEM_SERVER_PORT` | `9527` | HTTP port for REST, MCP SSE, and dashboard |
 | `CLICKMEM_REMOTE` | unset | Point CLI/MCP at a LAN server |
 | `CLICKMEM_API_KEY` | unset | Bearer token, required for non-loopback bind |
-| `CLICKMEM_BACKEND` | `local` | `local` or `clickhouse` |
+| `CLICKMEM_BACKEND` | `local` | `local`, `clickhouse`, or `durable` |
 | `CLICKMEM_DB_PATH` | `~/.clickmem/data` | chDB data dir for local backend |
 | `CLICKMEM_CH_URL` | unset | ClickHouse Cloud or self-hosted URL |
 | `CLICKMEM_CH_USER` | unset | ClickHouse user |
 | `CLICKMEM_CH_PASSWORD` | unset | ClickHouse password |
 | `CLICKMEM_CH_DATABASE` | `clickmem` | ClickHouse database |
+| `CLICKMEM_DURABLE_URL` | unset | Object-storage location for the durable backend (`s3://`, `gs://`, `az://`, or `local:/path`) |
+| `CLICKMEM_DURABLE_ID` | `default` | Store id within that location (see Selecting a store) |
 | `CLICKMEM_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
 | `CLICKMEM_CONFLICT_THRESHOLD` | `0.92` | Cosine similarity above which divergent content is flagged as a conflict |
 | `CLICKMEM_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |

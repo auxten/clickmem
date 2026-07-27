@@ -101,7 +101,7 @@ Built-in adapters cover Claude Code, Cursor, Codex CLI, Aider, Continue.dev, Cli
 
 ## Architecture
 
-One local process serves REST, MCP SSE, and the dashboard on the same port. Storage can be embedded chDB for a single machine or LAN setup, or ClickHouse for a shared backend. Recall is embedding-based and filtered by project, tags, privacy, status, and explicit caller options.
+One local process serves REST, MCP SSE, and the dashboard on the same port. Storage can be embedded chDB for a single machine or LAN setup, ClickHouse for a shared backend, or object storage you own (S3 / GCS / Azure Blob / a local folder) when you want persistent memory that follows you across machines without running a server. Recall is embedding-based and filtered by project, tags, privacy, status, and explicit caller options.
 
 Startup recall can filter by tags before vector ranking, so operational memories such as deployment or git workflow notes surface only when the current task asks for that class of context.
 
