@@ -1,18 +1,27 @@
-"""Smoke test for the durable backend — clickmem memory on a chdb.durable object.
+"""Durable backend tests — clickmem memory on a chdb.durable object.
 
-Requires `chdb.durable` importable (chdb >= the release that ships it).
+Collected by pytest and skipped when `chdb.durable` is not importable (it is
+merged into chDB but not yet in a released wheel). Also runnable as a plain
+script, including against MinIO/S3:
 
     PYTHONPATH=src python tests/test_durable_backend.py
-    # S3/MinIO:
     CHDB_DURABLE_S3_ENDPOINT=http://127.0.0.1:9000 \
       AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin AWS_REGION=us-east-1 \
       DAO_TEST_URL=s3://clickmem/memories PYTHONPATH=src python tests/test_durable_backend.py
 """
+import importlib.util
 import os
 import shutil
 import tempfile
 
-from clickmem.backend.durable import DurableBackend
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("chdb.durable") is None,
+    reason="chdb.durable not in this chdb release yet",
+)
+
+from clickmem.backend.durable import DurableBackend  # noqa: E402
 
 URL = os.getenv("DAO_TEST_URL") or ("local:" + tempfile.mkdtemp(prefix="clickmem-dao-"))
 OID = "user-1"
@@ -26,7 +35,7 @@ def _n(rows):
     return int(rows[0]["c"])
 
 
-def crash_replay_and_lease():
+def test_crash_replay_and_lease():
     """Crash (no close) → lease blocks reopen with a clear hint → force takeover
     replays the WAL and timestamps survive byte-identical (utc_now_sql is a
     Python-evaluated literal, so replayed statements are deterministic)."""
@@ -57,7 +66,7 @@ def crash_replay_and_lease():
     print("crash replay + lease hint: deterministic timestamps PASS")
 
 
-def lazy_audit_writes():
+def test_lazy_audit_writes():
     """execute_lazy applies locally without cutting a WAL segment; the next
     belief write's flush carries it; a crash loses only the audit tail."""
     root = tempfile.mkdtemp(prefix="clickmem-dao-lazy-")
@@ -87,7 +96,7 @@ def lazy_audit_writes():
     print("lazy audit writes: no per-write upload, piggyback flush, bounded loss PASS")
 
 
-def growth_control():
+def test_growth_control():
     """Segment-count trigger folds the WAL; the lazy deadline ships an idle
     audit tail; close only pays a full-base upload when replay would be long."""
     import time as _t
@@ -123,7 +132,7 @@ def growth_control():
     print("growth control: segment fold, idle-tail deadline, graded close PASS")
 
 
-def main():
+def test_bootstrap_persist_restore_wal_vector():
     b = _open()
     # bootstrap ran (clickmem's memories table exists); use a small table for the check
     b.execute("CREATE TABLE t (id String, content String, embedding Array(Float32)) "
@@ -150,8 +159,74 @@ def main():
     print("durable backend: bootstrap + persist + restore + WAL replay + vector_search PASS")
 
 
+def test_lazy_byte_threshold_flushes():
+    """execute_lazy ships immediately once buffered bytes cross the cap."""
+    root = tempfile.mkdtemp(prefix="clickmem-dao-lazyb-")
+    b = DurableBackend("local:" + root, "lb-1", embed_dim=4, db="clickmem")
+    wal = os.path.join(root, "lb-1", "wal")
+
+    def segs():
+        return len(os.listdir(wal)) if os.path.isdir(wal) else 0
+
+    b.execute("CREATE TABLE ev (id String) ENGINE=MergeTree ORDER BY id")
+    b._LAZY_FLUSH_BYTES = 1  # any lazy write now exceeds the cap
+    n0 = segs()
+    b.execute_lazy("INSERT INTO ev VALUES ('x')")
+    assert segs() == n0 + 1, "over-cap lazy write must flush immediately"
+    b.close()
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_close_checkpoints_when_wal_long():
+    """close folds the WAL into a base once it passes the close threshold."""
+    root = tempfile.mkdtemp(prefix="clickmem-dao-closeck-")
+    b = DurableBackend("local:" + root, "cc-1", embed_dim=4, db="clickmem")
+    ckpt = os.path.join(root, "cc-1", "checkpoints")
+    b.execute("CREATE TABLE ev (id String) ENGINE=MergeTree ORDER BY id")
+    b.execute("INSERT INTO ev VALUES ('x')")  # >= 1 WAL segment
+    b._CLOSE_CHECKPOINT_SEGMENTS = 1
+    n0 = len(os.listdir(ckpt)) if os.path.isdir(ckpt) else 0
+    b.close()
+    assert (len(os.listdir(ckpt)) if os.path.isdir(ckpt) else 0) > n0, "close should fold"
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_catalog_update_failure_is_swallowed(monkeypatch):
+    """A directory-update error must never propagate out of open/close —
+    the catalog is a navigation hint, not the source of truth."""
+    import clickmem.stores as st
+
+    root = tempfile.mkdtemp(prefix="clickmem-dao-catfail-")
+    monkeypatch.setattr(
+        st, "catalog_upsert",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    b = DurableBackend("local:" + root, "cf-1", embed_dim=4, db="clickmem")  # open path
+    b.execute("CREATE TABLE ev (id String) ENGINE=MergeTree ORDER BY id")
+    b.close()  # close path — must not raise despite the failing upsert
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_bootstrap_tolerates_bad_statement(monkeypatch):
+    """A bootstrap statement that errors (e.g. an unsupported ANN index on a
+    given build) is skipped, not fatal to opening the store."""
+    from clickmem.schema import bootstrap_statements as real
+
+    monkeypatch.setattr(
+        "clickmem.backend.durable.bootstrap_statements",
+        lambda dim: list(real(dim)) + ["THIS IS NOT VALID SQL"],
+    )
+    root = tempfile.mkdtemp(prefix="clickmem-dao-badboot-")
+    b = DurableBackend("local:" + root, "bb-1", embed_dim=4, db="clickmem")  # must open
+    assert _n(b.query("SELECT count() AS c FROM memories")) >= 0  # real tables still built
+    b.close()
+    shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
-    main()
-    crash_replay_and_lease()
-    lazy_audit_writes()
-    growth_control()
+    test_bootstrap_persist_restore_wal_vector()
+    test_crash_replay_and_lease()
+    test_lazy_audit_writes()
+    test_growth_control()
+    test_lazy_byte_threshold_flushes()
+    test_close_checkpoints_when_wal_long()
