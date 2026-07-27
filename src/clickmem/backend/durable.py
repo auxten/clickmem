@@ -42,6 +42,8 @@ class DurableBackend:
 
         self.embed_dim = embed_dim
         self._db = db
+        self._url = url
+        self._oid = oid
         # serialize all object access: the server's background worker and
         # request handlers share this backend across threads
         self._lock = threading.RLock()
@@ -67,6 +69,25 @@ class DurableBackend:
         # itself (chdb.durable replays with the manifest's db as current).
         self._obj.query(f"USE {db}")
         self._bootstrap()
+        self._catalog_update(opened=True)
+
+    def _catalog_update(self, opened: bool = False) -> None:
+        # best-effort directory entry (navigation hint only — the truth is the
+        # store's own head.json, so failures here are logged and dropped)
+        try:
+            from clickmem import stores
+
+            patch = stores.catalog_open_patch(self.embed_dim)
+            if not opened:  # closing: push cheap local stats for `store list`
+                rows = self.query(
+                    "SELECT count() AS memories, countIf(pinned) AS pinned, "
+                    "groupUniqArray(project_id) AS projects "
+                    "FROM memories FINAL WHERE status = 'active'")
+                if rows:
+                    patch.update(rows[0])
+            stores.catalog_upsert(self._url, self._oid, patch)
+        except Exception as e:  # noqa: BLE001
+            _log.debug("catalog update skipped: %s", e)
 
     def _run_ddl(self, sql: str) -> None:
         # Idempotent schema, re-run on every open — keep it OUT of the WAL
@@ -169,6 +190,7 @@ class DurableBackend:
     def close(self) -> None:
         with self._lock:
             try:
+                self._catalog_update()
                 self._obj.flush()  # ship the audit tail; beliefs are already out
                 if len(self._obj.wal) >= self._CLOSE_CHECKPOINT_SEGMENTS:
                     self._obj.checkpoint()  # fold only when replay would be long

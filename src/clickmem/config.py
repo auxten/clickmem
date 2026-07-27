@@ -44,6 +44,31 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [item for item in items if item]
 
 
+def _stored_active(backend_choice: str) -> str:
+    """The store id last selected via `store use` / `store new` for this
+    backend, from the per-user record (~/.clickmem/stores.json). Read inline
+    (not via clickmem.stores) to keep config import-cycle free. Env always
+    wins over the record."""
+    try:
+        import json
+
+        raw = (Path.home() / ".clickmem" / "stores.json").read_text()
+        value = json.loads(raw).get("active", {}).get(backend_choice, "")
+        return value if isinstance(value, str) else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def _local_store_path() -> Path:
+    env = os.environ.get("CLICKMEM_DB_PATH")
+    if env:
+        return Path(env).expanduser()
+    active = _stored_active("local")
+    if active and active != "default":
+        return Path.home() / ".clickmem" / "stores" / active
+    return Path.home() / ".clickmem" / "data"
+
+
 @dataclass
 class Config:
     server_host: str = field(default_factory=lambda: os.environ.get("CLICKMEM_SERVER_HOST", "127.0.0.1"))
@@ -52,17 +77,21 @@ class Config:
     api_key: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_API_KEY") or None)
 
     backend: str = field(default_factory=lambda: os.environ.get("CLICKMEM_BACKEND", "local"))
-    db_path: Path = field(
-        default_factory=lambda: _env_path("CLICKMEM_DB_PATH", Path.home() / ".clickmem" / "data")
-    )
+    db_path: Path = field(default_factory=_local_store_path)
 
     ch_url: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_URL") or None)
     ch_user: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_USER") or None)
     ch_password: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_PASSWORD") or None)
-    ch_database: str = field(default_factory=lambda: os.environ.get("CLICKMEM_CH_DATABASE", "clickmem"))
-    # durable backend (chdb.durable): object store + this memory's object id
+    ch_database: str = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_CH_DATABASE")
+        or _stored_active("clickhouse") or "clickmem"
+    )
+    # durable backend (chdb.durable): object store + this memory's store id
     durable_url: str | None = field(default_factory=lambda: os.environ.get("CLICKMEM_DURABLE_URL") or None)
-    durable_id: str = field(default_factory=lambda: os.environ.get("CLICKMEM_DURABLE_ID", "default"))
+    durable_id: str = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_DURABLE_ID")
+        or _stored_active("durable") or "default"
+    )
 
     embedding_model: str = field(
         default_factory=lambda: os.environ.get("CLICKMEM_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")

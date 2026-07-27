@@ -260,6 +260,25 @@ def _register_tools(server: FastMCP) -> None:
         return {"status": "unknown_op", "op": op}
 
     @server.tool()
+    def clickmem_store(op: str, id: str = "", description: str = "") -> dict[str, Any]:
+        """Memory-store ops. ``op`` ∈ ``list`` / ``use`` / ``new``.
+
+        A store is one whole memory database. ``list`` shows what exists for
+        the configured backend, ``use`` switches (recorded per user, applies
+        on next start), ``new`` creates a fresh empty store and switches.
+        """
+        from clickmem import stores
+
+        op = (op or "").lower()
+        if op == "list":
+            return stores.store_list()
+        if op == "use":
+            return stores.store_use(id)
+        if op == "new":
+            return stores.store_new(id, description=description)
+        return {"status": "unknown_op", "op": op}
+
+    @server.tool()
     def clickmem_review_dedup(candidate_id: str, neighbor_ids: list[str]) -> dict[str, Any]:
         """Return the candidate and its neighbours so the **agent's** model can
         decide MERGE / KEEP / SKIP. The server runs no LLM; this tool just
