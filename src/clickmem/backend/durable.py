@@ -77,6 +77,24 @@ class DurableBackend:
         # a committed write is durable at return: logged to the WAL, then flushed
         self._obj.execute(sql)
         self._obj.flush()
+        self._lazy_bytes = 0  # the flush carried any deferred audit writes too
+
+    # cap how much deferred audit data can pile up before we force an upload
+    # (Stop-hook transcripts can be large; an unbounded buffer would balloon
+    # the eventual WAL segment and the crash-loss window)
+    _LAZY_FLUSH_BYTES = 1 << 20
+    _lazy_bytes = 0
+
+    def execute_lazy(self, sql: str) -> None:
+        # audit-class write: applied to the local replica now, uploaded with
+        # the next belief write / close / checkpoint. Keeps hot paths (recall
+        # audit trail, raw transcript capture) free of upload latency; a crash
+        # loses only the audit tail since the last flush, never a belief.
+        self._obj.execute(sql)
+        self._lazy_bytes += len(sql)
+        if self._lazy_bytes >= self._LAZY_FLUSH_BYTES:
+            self._obj.flush()
+            self._lazy_bytes = 0
 
     def vector_search(self, table: str, query_vec: List[float], where: str, limit: int,
                       embedding_column: str = "embedding", select: str = "*",

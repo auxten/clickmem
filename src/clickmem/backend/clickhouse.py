@@ -103,6 +103,9 @@ class ClickHouseBackend:
         assert self._client is not None
         self._client.command(sql)
 
+    # server writes are durable as soon as they execute; nothing to defer
+    execute_lazy = execute
+
     def vector_search(
         self,
         table: str,

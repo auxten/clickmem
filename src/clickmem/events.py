@@ -50,7 +50,9 @@ def write(
         ")"
     )
     try:
-        backend.execute(sql)
+        # lazy: the audit log must not add upload latency to hot paths
+        # (recall runs on every turn); durability rides the next flush.
+        backend.execute_lazy(sql)
     except Exception as e:  # never block the caller on the audit log
         _log.warning("event.write failed (%s): %s", kind, e)
 

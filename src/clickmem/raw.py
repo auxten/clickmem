@@ -55,7 +55,10 @@ def append(
         f"{quote_str(text_hash)}, {quote_str(meta_str)}, {utc_now_sql()}"
         ")"
     )
-    backend.execute(sql)
+    # lazy: raw rows are evidence, not beliefs — the Stop hook fires every
+    # turn with the full transcript, and forcing an upload per turn would
+    # bloat hot-path latency; durability rides the next flush.
+    backend.execute_lazy(sql)
     event_write(
         "raw.land",
         agent=agent,
