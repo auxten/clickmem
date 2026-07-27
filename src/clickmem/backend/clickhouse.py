@@ -106,6 +106,9 @@ class ClickHouseBackend:
     # server writes are durable as soon as they execute; nothing to defer
     execute_lazy = execute
 
+    def maybe_flush(self) -> None:
+        pass
+
     def vector_search(
         self,
         table: str,

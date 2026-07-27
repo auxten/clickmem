@@ -87,6 +87,42 @@ def lazy_audit_writes():
     print("lazy audit writes: no per-write upload, piggyback flush, bounded loss PASS")
 
 
+def growth_control():
+    """Segment-count trigger folds the WAL; the lazy deadline ships an idle
+    audit tail; close only pays a full-base upload when replay would be long."""
+    import time as _t
+
+    root = tempfile.mkdtemp(prefix="clickmem-dao-growth-")
+    b = DurableBackend("local:" + root, "grow-1", embed_dim=4, db="clickmem")
+    ckpt_dir = os.path.join(root, "grow-1", "checkpoints")
+
+    b.execute("CREATE TABLE g (id String) ENGINE=MergeTree ORDER BY id")
+    b._CHECKPOINT_SEGMENTS = 3  # lower the fold threshold for the test
+    for i in range(3):
+        b.execute(f"INSERT INTO g VALUES ('s{i}')")
+    # fold fires when the WAL hits 3 segments (create + 2 inserts); the third
+    # insert then starts a fresh 1-segment WAL on top of the new base
+    assert len(b._obj.wal) == 1, b._obj.wal
+    assert os.path.isdir(ckpt_dir) and os.listdir(ckpt_dir)
+
+    b._LAZY_FLUSH_SECONDS = 0.05  # lower the deadline for the test
+    n_wal = len(b._obj.wal)
+    b.execute_lazy("INSERT INTO g VALUES ('audit')")
+    _t.sleep(0.1)
+    b.maybe_flush()  # what the server's background worker calls periodically
+    assert b._lazy_bytes == 0 and len(b._obj.wal) == n_wal + 1, "idle audit tail should ship"
+
+    n_ckpt = len(os.listdir(ckpt_dir))
+    b.close()  # 1 segment < close threshold: flush only, no new base
+    assert len(os.listdir(ckpt_dir)) == n_ckpt, "short WAL must not mint a base on close"
+
+    b2 = DurableBackend("local:" + root, "grow-1", embed_dim=4, db="clickmem")
+    assert _n(b2.query("SELECT count() AS c FROM g")) == 4  # base + replayed segment
+    b2.close()
+    shutil.rmtree(root, ignore_errors=True)
+    print("growth control: segment fold, idle-tail deadline, graded close PASS")
+
+
 def main():
     b = _open()
     # bootstrap ran (clickmem's memories table exists); use a small table for the check
@@ -118,3 +154,4 @@ if __name__ == "__main__":
     main()
     crash_replay_and_lease()
     lazy_audit_writes()
+    growth_control()

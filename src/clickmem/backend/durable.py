@@ -21,6 +21,8 @@ takeover is safe.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, List, Optional
 
 from clickmem.backend.local_chdb import _bytes_to_str, _parse_json_each_row
@@ -40,6 +42,15 @@ class DurableBackend:
 
         self.embed_dim = embed_dim
         self._db = db
+        # serialize all object access: the server's background worker and
+        # request handlers share this backend across threads
+        self._lock = threading.RLock()
+        self._lazy_bytes = 0            # deferred audit bytes since last flush
+        self._lazy_since: Optional[float] = None  # when the oldest of those landed
+        # statement bytes since the last checkpoint (approximates WAL size;
+        # segments already on storage from a previous run are covered by the
+        # segment-count trigger instead)
+        self._wal_bytes = 0
         self._ns = cd.Namespace(url, owner=owner or "clickmem", db=db)
         try:
             self._obj = self._ns.open(oid, force=force)
@@ -69,32 +80,76 @@ class DurableBackend:
             except Exception as e:  # tolerate optional pieces (e.g. an ANN index)
                 _log.debug("durable bootstrap skipped: %s", str(e).splitlines()[0][:120])
 
+    # -- growth control thresholds ----------------------------------------
+    # Maintenance always rides normal operations — no dedicated timer thread
+    # (same pattern as the lease, which renews inside execute near expiry).
+    #
+    # fold the WAL into a fresh base once either trips, so a long-running
+    # service doesn't leave an ever-longer replay chain for the next open
+    # (checkpoint is ~tens of ms at memory-store scale):
+    _CHECKPOINT_SEGMENTS = 64       # many small belief writes
+    _CHECKPOINT_WAL_BYTES = 32 << 20  # few but transcript-heavy segments
+    # on close, folding is only worth a full base upload if the WAL grew past
+    # this; below it, leave the few segments for the next open to replay
+    # (also avoids minting an orphaned base on every service restart)
+    _CLOSE_CHECKPOINT_SEGMENTS = 8
+    # ship deferred audit writes once either trips: bytes bound the eventual
+    # segment size, the deadline bounds how much a crash can lose in time
+    _LAZY_FLUSH_BYTES = 1 << 20
+    _LAZY_FLUSH_SECONDS = 60.0
+
+    def _maybe_checkpoint(self) -> None:
+        if (len(self._obj.wal) >= self._CHECKPOINT_SEGMENTS
+                or self._wal_bytes >= self._CHECKPOINT_WAL_BYTES):
+            self._obj.checkpoint()
+            self._wal_bytes = 0
+
+    def _flush_lazy(self) -> None:
+        self._obj.flush()
+        self._wal_bytes += self._lazy_bytes
+        self._lazy_bytes = 0
+        self._lazy_since = None
+        self._maybe_checkpoint()
+
+    def maybe_flush(self) -> None:
+        # deadline check for the deferred audit tail; ridden by queries and
+        # the server's background worker so even an idle tail ships within
+        # ~_LAZY_FLUSH_SECONDS
+        with self._lock:
+            if (self._lazy_since is not None
+                    and time.monotonic() - self._lazy_since >= self._LAZY_FLUSH_SECONDS):
+                self._flush_lazy()
+
     # -- Backend protocol -------------------------------------------------
     def query(self, sql: str) -> List[dict[str, Any]]:
-        return _parse_json_each_row(_bytes_to_str(self._obj.query(sql, "JSONEachRow")))
+        with self._lock:
+            self.maybe_flush()
+            return _parse_json_each_row(_bytes_to_str(self._obj.query(sql, "JSONEachRow")))
 
     def execute(self, sql: str) -> None:
         # a committed write is durable at return: logged to the WAL, then flushed
-        self._obj.execute(sql)
-        self._obj.flush()
-        self._lazy_bytes = 0  # the flush carried any deferred audit writes too
-
-    # cap how much deferred audit data can pile up before we force an upload
-    # (Stop-hook transcripts can be large; an unbounded buffer would balloon
-    # the eventual WAL segment and the crash-loss window)
-    _LAZY_FLUSH_BYTES = 1 << 20
-    _lazy_bytes = 0
+        with self._lock:
+            self._obj.execute(sql)
+            self._obj.flush()
+            # the flush carried any deferred audit writes too
+            self._wal_bytes += self._lazy_bytes + len(sql)
+            self._lazy_bytes = 0
+            self._lazy_since = None
+            self._maybe_checkpoint()
 
     def execute_lazy(self, sql: str) -> None:
         # audit-class write: applied to the local replica now, uploaded with
-        # the next belief write / close / checkpoint. Keeps hot paths (recall
-        # audit trail, raw transcript capture) free of upload latency; a crash
-        # loses only the audit tail since the last flush, never a belief.
-        self._obj.execute(sql)
-        self._lazy_bytes += len(sql)
-        if self._lazy_bytes >= self._LAZY_FLUSH_BYTES:
-            self._obj.flush()
-            self._lazy_bytes = 0
+        # the next belief write / flush deadline / close. Keeps hot paths
+        # (recall audit trail, raw transcript capture) free of upload latency;
+        # a crash loses only the audit tail since the last flush, never a belief.
+        with self._lock:
+            self._obj.execute(sql)
+            self._lazy_bytes += len(sql)
+            if self._lazy_since is None:
+                self._lazy_since = time.monotonic()
+            if (self._lazy_bytes >= self._LAZY_FLUSH_BYTES
+                    or time.monotonic() - self._lazy_since >= self._LAZY_FLUSH_SECONDS):
+                self._flush_lazy()
 
     def vector_search(self, table: str, query_vec: List[float], where: str, limit: int,
                       embedding_column: str = "embedding", select: str = "*",
@@ -112,7 +167,10 @@ class DurableBackend:
         return self.query(sql)
 
     def close(self) -> None:
-        try:
-            self._obj.checkpoint()  # fold the WAL into a fresh base before release
-        finally:
-            self._obj.close()
+        with self._lock:
+            try:
+                self._obj.flush()  # ship the audit tail; beliefs are already out
+                if len(self._obj.wal) >= self._CLOSE_CHECKPOINT_SEGMENTS:
+                    self._obj.checkpoint()  # fold only when replay would be long
+            finally:
+                self._obj.close()

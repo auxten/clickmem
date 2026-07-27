@@ -36,6 +36,12 @@ class Backend(Protocol):
         acceptable. Local and server backends treat this as ``execute``."""
         ...
 
+    def maybe_flush(self) -> None:
+        """Housekeeping hook: ship deferred work if it has waited too long.
+        Called opportunistically (background worker, periodic paths). No-op
+        for backends that never defer."""
+        ...
+
     def vector_search(
         self,
         table: str,
