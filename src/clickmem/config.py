@@ -93,6 +93,20 @@ class Config:
         or _stored_active("durable") or "default"
     )
 
+    # Optional shared project-memory store.  The personal backend above stays
+    # open in the main ClickMem process; project operations run in a short-lived
+    # helper process so chDB's process-local session does not contend with the
+    # personal memory actor.  One project store can contain many project_ids.
+    project_durable_url: str | None = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_PROJECT_DURABLE_URL") or None
+    )
+    project_durable_id: str = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_PROJECT_DURABLE_ID") or "team"
+    )
+    project_write_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS", 3.0)
+    )
+
     embedding_model: str = field(
         default_factory=lambda: os.environ.get("CLICKMEM_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
     )

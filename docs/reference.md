@@ -14,7 +14,8 @@ clickmem dashboard open         # http://127.0.0.1:9527/dashboard
 ## Core Memory Commands
 
 ```bash
-clickmem remember "..." --project owner/repo --tag workflow
+clickmem remember "..." --project owner/repo --tag workflow --scope personal
+clickmem remember "..." --project owner/repo --tag decision --scope project
 clickmem list --project-id X --kind principle --json
 clickmem show <id> --json
 clickmem edit <id> --content "..." --privacy public --pin
@@ -24,7 +25,7 @@ clickmem blacklist add "internal-only stuff" --scope global --reason "leaks"
 clickmem blacklist add id:abc-123 --reason "outdated"
 clickmem conflicts
 clickmem resolve <id> --revise <peer_id>    # or --contract / --allow
-clickmem recall "your query" --project owner/repo --tags workflow,deploy --timeout 5 --json
+clickmem recall "your query" --project owner/repo --tags workflow,deploy --scope all --timeout 5 --json
 clickmem recall-trace "your query" --project-id owner/repo --tag workflow --json
 clickmem get-raw <session_id> [--last N]
 ```
@@ -183,9 +184,49 @@ Choose the backend at server start with `CLICKMEM_BACKEND`. The schema is identi
 | --- | --- | --- |
 | chDB (default) | Single-machine or LAN-shared from one host | `CLICKMEM_BACKEND=local`; `CLICKMEM_DB_PATH=~/.clickmem/data` |
 | ClickHouse Cloud / self-hosted | Multi-device without a relay host, or larger-than-disk corpora | `CLICKMEM_BACKEND=clickhouse` plus ClickHouse connection variables |
-| Durable (object storage) | Persistent memory that follows you across machines/restarts without running a server (agents in Lambda, CI, sandboxes) | `CLICKMEM_BACKEND=durable`; `CLICKMEM_DURABLE_URL=s3://bucket/prefix` (or `gs://`, `az://`, `local:/path`); `CLICKMEM_DURABLE_ID=<store>` |
+| Durable (object storage) | Persistent memory that follows you across machines/restarts without running a server (agents in Lambda, CI, sandboxes) | `CLICKMEM_BACKEND=durable`; `CLICKMEM_DURABLE_URL=s3://bucket/prefix` (or `gcs://`, `azure://`, `local:/path`); `CLICKMEM_DURABLE_ID=<store>` |
 
 The durable backend keeps the database in object storage you own: memory writes are saved before they return, recall reads a local copy, and one writer holds the store at a time. It requires a `chdb` release that ships `chdb.durable` — until then it stays inactive.
+
+### Team memory: personal actor + shared project store
+
+Configure the normal durable backend as the user's personal store, then add a
+second durable location for shared project memory:
+
+```bash
+export CLICKMEM_BACKEND=durable
+export CLICKMEM_DURABLE_URL=s3://company-memory/chdb-cn/users
+export CLICKMEM_DURABLE_ID=shawn
+
+export CLICKMEM_PROJECT_DURABLE_URL=s3://company-memory/chdb-cn/projects
+export CLICKMEM_PROJECT_DURABLE_ID=chdb-io
+```
+
+The local ClickMem process remains the single writer for the personal store.
+Raw transcripts and hot-path session/recall audit events land there, including
+sessions from multiple local Codex and Claude processes. Project mutation
+history stays with the shared project object.
+
+Project memory is cold and deliberate. `scope=project` launches a bundled
+one-shot helper process, opens the project DAO at its latest revision, runs
+conflict detection, and publishes the memory, history, and audit rows as one
+WAL segment through the object store's ETag compare-and-set. A concurrent
+writer is retried briefly against the latest revision; continued contention
+returns HTTP 409 with `status=cas_conflict`. No team server or separately
+deployed actor is required. Object-store IAM on the project prefix defines
+team membership.
+
+```bash
+clickmem remember "chDB release wheels must include chdb.durable" \
+  --project chdb-io/chdb --tag release --scope project
+
+clickmem recall "what are the release requirements?" \
+  --project chdb-io/chdb --scope all --json
+```
+
+Read scope is `personal`, `project`, or `all` (the recall default). Write scope
+is `personal` or `project` (the write default remains `personal`). Project
+scope requires a real `project_id`; global memories stay personal.
 
 ### Selecting a store (durable / local)
 
@@ -282,8 +323,11 @@ Representative endpoints:
 | `CLICKMEM_CH_USER` | unset | ClickHouse user |
 | `CLICKMEM_CH_PASSWORD` | unset | ClickHouse password |
 | `CLICKMEM_CH_DATABASE` | `clickmem` | ClickHouse database |
-| `CLICKMEM_DURABLE_URL` | unset | Object-storage location for the durable backend (`s3://`, `gs://`, `az://`, or `local:/path`) |
+| `CLICKMEM_DURABLE_URL` | unset | Object-storage location for the durable backend (`s3://`, `gcs://`, `azure://`, or `local:/path`) |
 | `CLICKMEM_DURABLE_ID` | `default` | Store id within that location (see Selecting a store) |
+| `CLICKMEM_PROJECT_DURABLE_URL` | unset | Optional object-storage namespace for shared project memory |
+| `CLICKMEM_PROJECT_DURABLE_ID` | `team` | Shared project store id inside the project namespace |
+| `CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS` | `3` | Seconds to retry CAS/lease contention before returning HTTP 409 |
 | `CLICKMEM_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
 | `CLICKMEM_CONFLICT_THRESHOLD` | `0.92` | Cosine similarity above which divergent content is flagged as a conflict |
 | `CLICKMEM_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |

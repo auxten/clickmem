@@ -10,9 +10,13 @@ script, including against MinIO/S3:
       DAO_TEST_URL=s3://clickmem/memories PYTHONPATH=src python tests/test_durable_backend.py
 """
 import importlib.util
+import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -185,6 +189,112 @@ def test_initial_schema_checkpoint_precedes_first_memory_wal():
     reopened = DurableBackend(url, "first-1", embed_dim=4, db="clickmem")
     assert memories.get(result["id"], backend=reopened) is not None
     reopened.close()
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_cold_batch_publishes_one_wal_segment_or_discards_everything():
+    """A project mutation is visible atomically at one DAO head revision."""
+    from clickmem import memories
+
+    root = tempfile.mkdtemp(prefix="clickmem-dao-cold-batch-")
+    url = "local:" + root
+
+    committed = DurableBackend(
+        url,
+        "project-commit",
+        embed_dim=4,
+        db="clickmem",
+        flush_on_execute=False,
+    )
+    result = memories.add(
+        "atomic project memory",
+        project_id="chdb-io/chdb",
+        tags=["atomic"],
+        backend=committed,
+    )
+    assert committed._obj.wal == []
+    committed.commit()
+    assert len(committed._obj.wal) == 1
+    committed.close()
+
+    reopened = DurableBackend(url, "project-commit", embed_dim=4, db="clickmem")
+    assert memories.get(result["id"], backend=reopened) is not None
+    reopened.close()
+
+    discarded = DurableBackend(
+        url,
+        "project-discard",
+        embed_dim=4,
+        db="clickmem",
+        flush_on_execute=False,
+    )
+    dropped = memories.add(
+        "do not publish partial project state",
+        project_id="chdb-io/chdb",
+        tags=["atomic"],
+        backend=discarded,
+    )
+    discarded.discard_pending()
+    discarded.close()
+
+    reopened = DurableBackend(url, "project-discard", embed_dim=4, db="clickmem")
+    assert memories.get(dropped["id"], backend=reopened) is None
+    reopened.close()
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_concurrent_project_remember_reopens_latest_and_surfaces_conflict():
+    """The CAS loser waits, reopens the winner, and checks conflicts again."""
+    root = tempfile.mkdtemp(prefix="clickmem-dao-project-race-")
+    env = os.environ.copy()
+    env.update(
+        {
+            "CLICKMEM_PROJECT_DURABLE_URL": "local:" + root,
+            "CLICKMEM_PROJECT_DURABLE_ID": "chdb-io",
+            "CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS": "3",
+            "CLICKMEM_EMBEDDING_DIM": "4",
+        }
+    )
+
+    def submit(content: str) -> dict:
+        request = {
+            "op": "remember",
+            "payload": {
+                "content": content,
+                "project_id": "chdb-io/chdb",
+                "tags": ["release"],
+                "kind": "decision",
+                "privacy": "public",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+            },
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "clickmem.project_worker"],
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+            timeout=15,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads([line for line in proc.stdout.splitlines() if line][-1])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                submit,
+                [
+                    "The release must use arm64 wheels.",
+                    "The release must use x86_64 wheels.",
+                ],
+            )
+        )
+
+    assert {result["status"] for result in results} == {"added", "conflicted"}
+    assert all(result["scope"] == "project" for result in results)
+    conflicted = next(result for result in results if result["status"] == "conflicted")
+    assert conflicted["peer_ids"]
     shutil.rmtree(root, ignore_errors=True)
 
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -25,6 +25,9 @@ from clickmem.transport import get_transport
 
 
 _log = logging.getLogger(__name__)
+
+WriteScope = Literal["personal", "project"]
+ReadScope = Literal["personal", "project", "all"]
 
 
 def _server() -> FastMCP:
@@ -46,6 +49,7 @@ def _register_tools(server: FastMCP) -> None:
         source_ref: str = "",
         revises_id: str = "",
         agent: str = "",
+        scope: WriteScope = "personal",
     ) -> dict[str, Any]:
         """Expand: commit a new memory.
 
@@ -70,6 +74,7 @@ def _register_tools(server: FastMCP) -> None:
             source_ref=source_ref,
             revises_id=revises_id,
             agent=agent,
+            scope=scope,
         )
 
     @server.tool()
@@ -83,6 +88,7 @@ def _register_tools(server: FastMCP) -> None:
         pinned: Optional[bool] = None,
         revises_id: Optional[str] = None,
         agent: str = "",
+        scope: WriteScope = "personal",
     ) -> dict[str, Any]:
         """Revise: edit an existing memory; re-runs conflict detection."""
         payload: dict[str, Any] = {}
@@ -98,19 +104,30 @@ def _register_tools(server: FastMCP) -> None:
             if v is not None:
                 payload[k] = v
         payload["agent"] = agent
+        payload["scope"] = scope
         return get_transport().edit(memory_id, **payload)
 
     @server.tool()
-    def clickmem_forget(memory_id: str, reason: str = "", agent: str = "") -> dict[str, Any]:
+    def clickmem_forget(
+        memory_id: str,
+        reason: str = "",
+        agent: str = "",
+        scope: WriteScope = "personal",
+    ) -> dict[str, Any]:
         """Contract: mark a memory ``status='contracted'`` (excluded from recall)."""
-        return get_transport().forget(memory_id, reason=reason, agent=agent)
+        return get_transport().forget(memory_id, reason=reason, agent=agent, scope=scope)
 
     @server.tool()
-    def clickmem_pin(memory_id: str, unpin: bool = False, agent: str = "") -> dict[str, Any]:
+    def clickmem_pin(
+        memory_id: str,
+        unpin: bool = False,
+        agent: str = "",
+        scope: WriteScope = "personal",
+    ) -> dict[str, Any]:
         """Reinforce: pin or unpin a memory (pass ``unpin=True`` to unpin)."""
         if unpin:
-            return get_transport().unpin(memory_id, agent=agent)
-        return get_transport().pin(memory_id, agent=agent)
+            return get_transport().unpin(memory_id, agent=agent, scope=scope)
+        return get_transport().pin(memory_id, agent=agent, scope=scope)
 
     @server.tool()
     def clickmem_blacklist(
@@ -144,6 +161,7 @@ def _register_tools(server: FastMCP) -> None:
         tag_mode: str = "any",
         timeout_seconds: float = 5.0,
         agent: str = "",
+        scope: ReadScope = "all",
     ) -> dict[str, Any]:
         """Run embedding recall.
 
@@ -167,6 +185,7 @@ def _register_tools(server: FastMCP) -> None:
             tag_mode=tag_mode,
             timeout_seconds=timeout_seconds,
             agent=agent,
+            scope=scope,
         )
 
     @server.tool()
@@ -182,6 +201,7 @@ def _register_tools(server: FastMCP) -> None:
         tag_mode: str = "any",
         timeout_seconds: float = 5.0,
         agent: str = "",
+        scope: ReadScope = "all",
     ) -> dict[str, Any]:
         """Recall with per-candidate scoring breakdown (Recall Lab)."""
         if include_confidential and not privacy_ack:
@@ -197,12 +217,23 @@ def _register_tools(server: FastMCP) -> None:
             tag_mode=tag_mode,
             timeout_seconds=timeout_seconds,
             agent=agent,
+            scope=scope,
         )
 
     @server.tool()
-    def clickmem_show(memory_id: str, with_history: bool = False, with_neighbors: bool = False) -> dict[str, Any]:
+    def clickmem_show(
+        memory_id: str,
+        with_history: bool = False,
+        with_neighbors: bool = False,
+        scope: WriteScope = "personal",
+    ) -> dict[str, Any]:
         """Return one memory; optionally also its history and neighbours."""
-        return get_transport().show(memory_id, with_history=with_history, with_neighbors=with_neighbors)
+        return get_transport().show(
+            memory_id,
+            with_history=with_history,
+            with_neighbors=with_neighbors,
+            scope=scope,
+        )
 
     @server.tool()
     def clickmem_list(
@@ -215,6 +246,7 @@ def _register_tools(server: FastMCP) -> None:
         search: Optional[str] = None,
         offset: int = 0,
         limit: int = 50,
+        scope: WriteScope = "personal",
     ) -> dict[str, Any]:
         """Paginated list of memories with the full filter set."""
         return get_transport().list_memories(
@@ -227,17 +259,26 @@ def _register_tools(server: FastMCP) -> None:
             search=search,
             offset=offset,
             limit=limit,
+            scope=scope,
         )
 
     @server.tool()
-    def clickmem_conflicts(project_id: Optional[str] = None) -> dict[str, Any]:
+    def clickmem_conflicts(
+        project_id: Optional[str] = None,
+        scope: WriteScope = "personal",
+    ) -> dict[str, Any]:
         """Return current unresolved conflict groups."""
-        return {"items": get_transport().conflicts(project_id=project_id)}
+        return {"items": get_transport().conflicts(project_id=project_id, scope=scope)}
 
     @server.tool()
-    def clickmem_resolve(memory_id: str, op: str, peer_id: str = "") -> dict[str, Any]:
+    def clickmem_resolve(
+        memory_id: str,
+        op: str,
+        peer_id: str = "",
+        scope: WriteScope = "personal",
+    ) -> dict[str, Any]:
         """Resolve a conflict. ``op`` ∈ ``allow`` / ``contract`` / ``revise``."""
-        return get_transport().resolve(memory_id, op, peer_id=peer_id)
+        return get_transport().resolve(memory_id, op, peer_id=peer_id, scope=scope)
 
     @server.tool()
     def clickmem_get_raw(

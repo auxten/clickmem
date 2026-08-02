@@ -31,6 +31,9 @@ ClickMem treats memory as a set of beliefs you intentionally keep, not a log of 
 - **You can change your mind.** Memories can be revised, forgotten, pinned as authoritative, or blacklisted so a bad pattern never enters the store again.
 - **Conflicts are surfaced instead of hidden.** If a new memory is semantically close to an older one but says something different, ClickMem flags the contradiction for resolution.
 - **Recall is scoped.** Project, privacy, and source boundaries stop one part of your life or work from leaking into another.
+- **Team memory keeps evidence personal and beliefs shared.** Each user's local
+  server is the single writer for raw transcripts; explicitly committed
+  project memories use short-lived object-store CAS, without a team server.
 
 ClickMem is deliberately boring at recall time: retrieve the few relevant committed memories, show why they matched, and let the caller decide what to do with them.
 

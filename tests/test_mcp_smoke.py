@@ -61,6 +61,13 @@ def test_mcp_tool_input_schemas_have_required_fields(backend):
         assert params is not None
         if getattr(tool, "name", "") == "clickmem_remember":
             assert {"content", "project_id", "tags"}.issubset(set(params.get("required", [])))
+            assert params["properties"]["scope"]["enum"] == ["personal", "project"]
+        if getattr(tool, "name", "") == "clickmem_recall":
+            assert params["properties"]["scope"]["enum"] == [
+                "personal",
+                "project",
+                "all",
+            ]
 
 
 def test_mcp_sse_app_uses_mount_relative_routes(backend):

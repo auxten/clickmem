@@ -53,6 +53,7 @@ class Hit:
     source: str = ""
     tags: List[str] = field(default_factory=list)
     updated_at: str = ""
+    scope: str = "personal"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +72,7 @@ class Hit:
             "source": self.source,
             "tags": list(self.tags),
             "updated_at": self.updated_at,
+            "scope": self.scope,
         }
 
 
@@ -170,13 +172,20 @@ def recall(
     tag_mode: str = "any",
     pool_size: int = 50,
     agent: str = "",
+    scope: str = "personal",
+    query_vector: Iterable[float] | None = None,
+    write_event: bool = True,
     backend: Backend | None = None,
 ) -> List[Hit]:
     """Return ranked memories for ``query``. No LLM is invoked."""
     backend = backend or get_backend()
     if not query or not query.strip():
         return []
-    vec = embed(query.strip())
+    vec = (
+        [float(value) for value in query_vector]
+        if query_vector is not None
+        else embed(query.strip())
+    )
 
     where_parts = ["status = 'active'", "pending_embedding = 0"]
     if not include_confidential:
@@ -232,25 +241,28 @@ def recall(
                 source=str(r.get("source", "")),
                 tags=hit_tags,
                 updated_at=str(r.get("updated_at", "")),
+                scope=scope,
             )
         )
 
     hits.sort(key=lambda h: (h.pinned, h.score), reverse=True)
     out = hits[: int(limit)]
 
-    event_write(
-        "recall.run",
-        agent=agent,
-        project_id=project_id,
-        message=f"recall returned {len(out)} hits",
-        payload={
-            "query_preview": query[:120],
-            "hit_ids": [h.id for h in out],
-            "tags": requested_tags,
-            "tag_mode": tag_mode,
-        },
-        backend=backend,
-    )
+    if write_event:
+        event_write(
+            "recall.run",
+            agent=agent,
+            project_id=project_id,
+            message=f"recall returned {len(out)} hits",
+            payload={
+                "query_preview": query[:120],
+                "hit_ids": [h.id for h in out],
+                "tags": requested_tags,
+                "tag_mode": tag_mode,
+                "scope": scope,
+            },
+            backend=backend,
+        )
     return out
 
 
@@ -266,6 +278,8 @@ def recall_trace(
     tag_mode: str = "any",
     pool_size: int = 50,
     agent: str = "",
+    scope: str = "personal",
+    query_vector: Iterable[float] | None = None,
     backend: Backend | None = None,
 ) -> dict[str, Any]:
     """Return scoring breakdown alongside the hits for the Recall Lab page."""
@@ -273,7 +287,11 @@ def recall_trace(
     if not query or not query.strip():
         return {"query": query, "hits": [], "candidates": [], "filters": {}}
 
-    vec = embed(query.strip())
+    vec = (
+        [float(value) for value in query_vector]
+        if query_vector is not None
+        else embed(query.strip())
+    )
 
     where_parts = ["status = 'active'", "pending_embedding = 0"]
     if not include_confidential:
@@ -336,6 +354,7 @@ def recall_trace(
                 "privacy_blocked": privacy_blocked,
                 "score": score,
                 "kept": kept,
+                "scope": scope,
             }
         )
         if kept:
@@ -356,6 +375,7 @@ def recall_trace(
                     source=str(r.get("source", "")),
                     tags=hit_tags,
                     updated_at=str(r.get("updated_at", "")),
+                    scope=scope,
                 )
             )
 
@@ -369,6 +389,7 @@ def recall_trace(
             "kind": kind,
             "tags": requested_tags,
             "tag_mode": tag_mode,
+            "scope": scope,
         },
         "hits": [h.to_dict() for h in hits[: int(limit)]],
         "candidates": candidates,

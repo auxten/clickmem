@@ -113,6 +113,7 @@ def remember(
     source: str = typer.Option("cli"),
     source_ref: str = typer.Option(""),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Expand: commit a new memory."""
     resolved_project = _resolve_memory_scope(project_id, global_scope)
@@ -127,6 +128,7 @@ def remember(
         source=source,
         source_ref=source_ref,
         agent=agent,
+        scope=scope,
     )
     _print(result)
 
@@ -142,9 +144,10 @@ def edit(
     tags: list[str] = typer.Option([], "--tags", help="comma-separated replacement tags"),
     pinned: Optional[bool] = typer.Option(None, "--pin/--no-pin"),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Revise: edit an existing memory."""
-    kwargs: dict[str, object] = {"agent": agent}
+    kwargs: dict[str, object] = {"agent": agent, "scope": scope}
     if content is not None:
         kwargs["content"] = content
     if kind is not None:
@@ -166,21 +169,30 @@ def forget(
     memory_id: str = typer.Argument(...),
     reason: str = typer.Option(""),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Contract: mark a memory contracted (excluded from recall)."""
-    _print(get_transport().forget(memory_id, reason=reason, agent=agent))
+    _print(get_transport().forget(memory_id, reason=reason, agent=agent, scope=scope))
 
 
 @app.command()
-def pin(memory_id: str = typer.Argument(...), agent: str = typer.Option("")) -> None:
+def pin(
+    memory_id: str = typer.Argument(...),
+    agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
+) -> None:
     """Reinforce: pin a memory."""
-    _print(get_transport().pin(memory_id, agent=agent))
+    _print(get_transport().pin(memory_id, agent=agent, scope=scope))
 
 
 @app.command()
-def unpin(memory_id: str = typer.Argument(...), agent: str = typer.Option("")) -> None:
+def unpin(
+    memory_id: str = typer.Argument(...),
+    agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
+) -> None:
     """Unpin a memory."""
-    _print(get_transport().unpin(memory_id, agent=agent))
+    _print(get_transport().unpin(memory_id, agent=agent, scope=scope))
 
 
 # ---------- inspection ---------------------------------------------------
@@ -200,6 +212,7 @@ def recall(
     timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
     agent: str = typer.Option(""),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("all", help="personal | project | all"),
 ) -> None:
     """Run embedding recall against the brain."""
     res = get_transport().recall(
@@ -213,6 +226,7 @@ def recall(
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
         agent=agent,
+        scope=scope,
     )
     if raw_json:
         _print(res, raw_json=True)
@@ -225,6 +239,7 @@ def recall(
         return
     table = Table(show_lines=True)
     table.add_column("score", justify="right")
+    table.add_column("scope")
     table.add_column("kind")
     table.add_column("project")
     table.add_column("privacy")
@@ -234,6 +249,7 @@ def recall(
     for h in hits:
         table.add_row(
             f"{h.get('score', 0.0):.3f}",
+            h.get("scope", "personal"),
             h.get("kind", ""),
             h.get("project_id", "") or "-",
             h.get("privacy", ""),
@@ -257,6 +273,7 @@ def recall_trace_cmd(
     tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
     timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("all", help="personal | project | all"),
 ) -> None:
     """Recall with per-candidate scoring breakdown."""
     _print(get_transport().recall_trace(
@@ -269,6 +286,7 @@ def recall_trace_cmd(
         tags=_normalize_tags(tag, tags),
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
+        scope=scope,
     ), raw_json=raw_json)
 
 
@@ -278,9 +296,18 @@ def show(
     history: bool = typer.Option(False, "--history"),
     neighbors: bool = typer.Option(False, "--neighbors"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Show a single memory; optionally history and neighbours."""
-    _print(get_transport().show(memory_id, with_history=history, with_neighbors=neighbors), raw_json=raw_json)
+    _print(
+        get_transport().show(
+            memory_id,
+            with_history=history,
+            with_neighbors=neighbors,
+            scope=scope,
+        ),
+        raw_json=raw_json,
+    )
 
 
 @app.command("list")
@@ -295,6 +322,7 @@ def list_cmd(
     offset: int = typer.Option(0),
     limit: int = typer.Option(50),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """List memories with filters."""
     _print(get_transport().list_memories(
@@ -307,6 +335,7 @@ def list_cmd(
         search=search,
         offset=offset,
         limit=limit,
+        scope=scope,
     ), raw_json=raw_json)
 
 
@@ -314,9 +343,10 @@ def list_cmd(
 def conflicts(
     project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """List unresolved conflicts."""
-    _print(get_transport().conflicts(project_id=project_id), raw_json=raw_json)
+    _print(get_transport().conflicts(project_id=project_id, scope=scope), raw_json=raw_json)
 
 
 @app.command()
@@ -325,16 +355,17 @@ def resolve(
     revise: Optional[str] = typer.Option(None, "--revise", help="peer id whose conflict is resolved by your edit"),
     contract: Optional[str] = typer.Option(None, "--contract", help="peer id to contract"),
     allow: bool = typer.Option(False, "--allow", help="keep both, clear the conflict flag"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Resolve a conflict for a memory."""
     if allow:
-        _print(get_transport().resolve(memory_id, "allow"))
+        _print(get_transport().resolve(memory_id, "allow", scope=scope))
         return
     if revise:
-        _print(get_transport().resolve(memory_id, "revise", peer_id=revise))
+        _print(get_transport().resolve(memory_id, "revise", peer_id=revise, scope=scope))
         return
     if contract:
-        _print(get_transport().resolve(memory_id, "contract", peer_id=contract))
+        _print(get_transport().resolve(memory_id, "contract", peer_id=contract, scope=scope))
         return
     raise typer.BadParameter("resolve requires one of --revise / --contract / --allow")
 

@@ -37,13 +37,17 @@ class DurableBackend:
 
     def __init__(self, url: str, oid: str, embed_dim: int = 256,
                  db: str = "clickmem", owner: Optional[str] = None,
-                 force: bool = False) -> None:
+                 force: bool = False, read_only: bool = False,
+                 flush_on_execute: bool = True) -> None:
         from chdb import durable as cd
 
         self.embed_dim = embed_dim
         self._db = db
         self._url = url
         self._oid = oid
+        self._read_only = bool(read_only)
+        self._flush_on_execute = bool(flush_on_execute)
+        self._discarded = False
         # serialize all object access: the server's background worker and
         # request handlers share this backend across threads
         self._lock = threading.RLock()
@@ -55,7 +59,7 @@ class DurableBackend:
         self._wal_bytes = 0
         self._ns = cd.Namespace(url, owner=owner or "clickmem", db=db)
         try:
-            self._obj = self._ns.open(oid, force=force)
+            self._obj = self._ns.open(oid, force=force, read_only=self._read_only)
         except cd.LeaseError as e:
             raise cd.LeaseError(
                 f"memory object {oid!r} is lease-locked ({e}). Another clickmem "
@@ -68,17 +72,18 @@ class DurableBackend:
         # query() so it is not written to the WAL: replay restores this context
         # itself (chdb.durable replays with the manifest's db as current).
         self._obj.query(f"USE {db}")
-        # Bootstrap DDL intentionally stays out of the WAL.  Therefore a
-        # brand-new object (including one cold-created by `store new`) must
-        # checkpoint the schema before any later data WAL can reference those
-        # tables.  Without this base, a short first session closes with only a
-        # few WAL segments; the next open replays INSERTs before the constructor
-        # can bootstrap and fails with UNKNOWN_TABLE.
-        needs_initial_base = self._obj.base is None and not self._obj.wal
-        self._bootstrap()
-        if needs_initial_base:
-            self._obj.checkpoint()
-        self._catalog_update(opened=True)
+        if not self._read_only:
+            # Bootstrap DDL intentionally stays out of the WAL.  Therefore a
+            # brand-new object (including one cold-created by `store new`) must
+            # checkpoint the schema before any later data WAL can reference
+            # those tables.  Without this base, a short first session closes
+            # with only a few WAL segments; the next open replays INSERTs before
+            # the constructor can bootstrap and fails with UNKNOWN_TABLE.
+            needs_initial_base = self._obj.base is None and not self._obj.wal
+            self._bootstrap()
+            if needs_initial_base:
+                self._obj.checkpoint()
+            self._catalog_update(opened=True)
 
     def _catalog_update(self, opened: bool = False) -> None:
         # best-effort directory entry (navigation hint only — the truth is the
@@ -145,6 +150,11 @@ class DurableBackend:
         # deadline check for the deferred audit tail; ridden by queries and
         # the server's background worker so even an idle tail ships within
         # ~_LAZY_FLUSH_SECONDS
+        if not self._flush_on_execute:
+            # A cold project mutation is one atomic WAL/CAS batch. Queries made
+            # while conflict detection is running must see local changes but
+            # must not publish a partial operation.
+            return
         with self._lock:
             if (self._lazy_since is not None
                     and time.monotonic() - self._lazy_since >= self._LAZY_FLUSH_SECONDS):
@@ -157,9 +167,17 @@ class DurableBackend:
             return _parse_json_each_row(_bytes_to_str(self._obj.query(sql, "JSONEachRow")))
 
     def execute(self, sql: str) -> None:
-        # a committed write is durable at return: logged to the WAL, then flushed
+        # Normal mode is durable at return. Cold-batch mode publishes later in
+        # commit(), after all conflict/history writes have succeeded locally.
+        if self._read_only:
+            raise RuntimeError("durable backend is read-only")
         with self._lock:
             self._obj.execute(sql)
+            if not self._flush_on_execute:
+                self._lazy_bytes += len(sql)
+                if self._lazy_since is None:
+                    self._lazy_since = time.monotonic()
+                return
             self._obj.flush()
             # the flush carried any deferred audit writes too
             self._wal_bytes += self._lazy_bytes + len(sql)
@@ -172,14 +190,37 @@ class DurableBackend:
         # the next belief write / flush deadline / close. Keeps hot paths
         # (recall audit trail, raw transcript capture) free of upload latency;
         # a crash loses only the audit tail since the last flush, never a belief.
+        if self._read_only:
+            raise RuntimeError("durable backend is read-only")
         with self._lock:
             self._obj.execute(sql)
             self._lazy_bytes += len(sql)
             if self._lazy_since is None:
                 self._lazy_since = time.monotonic()
-            if (self._lazy_bytes >= self._LAZY_FLUSH_BYTES
-                    or time.monotonic() - self._lazy_since >= self._LAZY_FLUSH_SECONDS):
+            if (self._flush_on_execute
+                    and (self._lazy_bytes >= self._LAZY_FLUSH_BYTES
+                         or time.monotonic() - self._lazy_since >= self._LAZY_FLUSH_SECONDS)):
                 self._flush_lazy()
+
+    def commit(self) -> None:
+        """Publish one buffered cold operation as a single WAL/head CAS."""
+        if self._read_only:
+            raise RuntimeError("durable backend is read-only")
+        with self._lock:
+            self._flush_lazy()
+
+    def discard_pending(self) -> None:
+        """Discard an unpublished cold-operation batch after an exception."""
+        if self._flush_on_execute:
+            return
+        with self._lock:
+            # chdb.durable deliberately keeps executed SQL in this WAL buffer
+            # until flush(). Clearing it leaves the object head untouched; the
+            # temporary local replica is thrown away by close().
+            self._obj._buf.clear()
+            self._lazy_bytes = 0
+            self._lazy_since = None
+            self._discarded = True
 
     def vector_search(self, table: str, query_vec: List[float], where: str, limit: int,
                       embedding_column: str = "embedding", select: str = "*",
@@ -198,8 +239,12 @@ class DurableBackend:
 
     def close(self) -> None:
         with self._lock:
+            if self._read_only:
+                self._obj.close()
+                return
             try:
-                self._catalog_update()
+                if not self._discarded:
+                    self._catalog_update()
                 self._obj.flush()  # ship the audit tail; beliefs are already out
                 if len(self._obj.wal) >= self._CLOSE_CHECKPOINT_SEGMENTS:
                     self._obj.checkpoint()  # fold only when replay would be long

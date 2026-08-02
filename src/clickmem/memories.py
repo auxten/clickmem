@@ -173,6 +173,7 @@ def add(
     revises_id: str = "",
     agent: str = "",
     skip_conflict_check: bool = False,
+    embedding_vector: Iterable[float] | None = None,
     backend: Backend | None = None,
 ) -> dict[str, Any]:
     """Expand: commit a new memory.
@@ -203,7 +204,11 @@ def add(
             "message": f"matched blacklist pattern {bl.pattern!r}",
         }
 
-    embedding = embed(content)
+    embedding = (
+        [float(value) for value in embedding_vector]
+        if embedding_vector is not None
+        else embed(content)
+    )
     candidate = Memory(
         id=_new_id(),
         content=content,
@@ -575,6 +580,7 @@ def edit(
     pinned: bool | None = None,
     revises_id: str | None = None,
     agent: str = "",
+    embedding_vector: Iterable[float] | None = None,
     backend: Backend | None = None,
 ) -> dict[str, Any]:
     """Revise: edit an existing memory; re-runs conflict detection."""
@@ -583,6 +589,7 @@ def edit(
     if existing is None:
         return {"status": "missing", "id": memory_id, "peer_ids": [], "message": "no such memory"}
 
+    content_changed = content is not None
     if content is not None:
         existing.content = content.strip()
     if kind is not None:
@@ -601,9 +608,13 @@ def edit(
     existing.status = "active"
     existing.conflict_with = []
     existing.content_hash = _hash_content(existing.content)
-    existing.embedding = embed(existing.content)
+    if embedding_vector is not None:
+        existing.embedding = [float(value) for value in embedding_vector]
+    elif content_changed:
+        existing.embedding = embed(existing.content)
     existing.pending_embedding = False
-    existing.embed_attempts = int(existing.embed_attempts or 0) + 1
+    if embedding_vector is not None or content_changed:
+        existing.embed_attempts = int(existing.embed_attempts or 0) + 1
 
     bl = enforce_on_insert(existing.content, project_id=existing.project_id, backend=backend)
     if bl is not None:
