@@ -68,7 +68,16 @@ class DurableBackend:
         # query() so it is not written to the WAL: replay restores this context
         # itself (chdb.durable replays with the manifest's db as current).
         self._obj.query(f"USE {db}")
+        # Bootstrap DDL intentionally stays out of the WAL.  Therefore a
+        # brand-new object (including one cold-created by `store new`) must
+        # checkpoint the schema before any later data WAL can reference those
+        # tables.  Without this base, a short first session closes with only a
+        # few WAL segments; the next open replays INSERTs before the constructor
+        # can bootstrap and fails with UNKNOWN_TABLE.
+        needs_initial_base = self._obj.base is None and not self._obj.wal
         self._bootstrap()
+        if needs_initial_base:
+            self._obj.checkpoint()
         self._catalog_update(opened=True)
 
     def _catalog_update(self, opened: bool = False) -> None:

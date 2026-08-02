@@ -159,6 +159,35 @@ def test_bootstrap_persist_restore_wal_vector():
     print("durable backend: bootstrap + persist + restore + WAL replay + vector_search PASS")
 
 
+def test_initial_schema_checkpoint_precedes_first_memory_wal():
+    """A short first session must reopen even though bootstrap DDL is not WAL-logged.
+
+    Regression: the first few memory/history/event INSERTs were persisted as
+    WAL, but close deliberately skipped a full checkpoint below eight segments.
+    Reopen then replayed those INSERTs before the constructor could bootstrap
+    the tables and failed with UNKNOWN_TABLE.
+    """
+    from clickmem import memories
+
+    root = tempfile.mkdtemp(prefix="clickmem-dao-first-base-")
+    url = "local:" + root
+    b = DurableBackend(url, "first-1", embed_dim=4, db="clickmem")
+    result = memories.add(
+        "first durable memory",
+        project_id="chdb-io/chdb",
+        tags=["regression"],
+        backend=b,
+    )
+    assert result["status"] == "added"
+    assert len(b._obj.wal) < b._CLOSE_CHECKPOINT_SEGMENTS
+    b.close()
+
+    reopened = DurableBackend(url, "first-1", embed_dim=4, db="clickmem")
+    assert memories.get(result["id"], backend=reopened) is not None
+    reopened.close()
+    shutil.rmtree(root, ignore_errors=True)
+
+
 def test_lazy_byte_threshold_flushes():
     """execute_lazy ships immediately once buffered bytes cross the cap."""
     root = tempfile.mkdtemp(prefix="clickmem-dao-lazyb-")
