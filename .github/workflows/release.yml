@@ -50,10 +50,18 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Releasing version ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/clickmem/__init__.py
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build wheel + sdist (dashboard/dist is prebuilt above)
         run: python -m build
+
+      - name: Verify runtime version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pip install --force-reinstall --no-deps dist/*.whl
+          python -c 'import clickmem, os; assert clickmem.__version__ == os.environ["VERSION"]'
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -74,14 +82,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # earlier steps left pyproject.toml dirty in the working tree;
+          # Earlier steps left the version files dirty in the working tree;
           # force-switch to main so the bump is applied on top of main HEAD.
           git checkout --force main
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
-          if [ -n "$(git status --porcelain pyproject.toml)" ]; then
-            git add pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/clickmem/__init__.py
+          if [ -n "$(git status --porcelain pyproject.toml src/clickmem/__init__.py)" ]; then
+            git add pyproject.toml src/clickmem/__init__.py
             git commit -m "release: bump version to ${VERSION}"
             git push origin main
           else
-            echo "pyproject.toml already at ${VERSION} on main; skipping commit"
+            echo "version files already at ${VERSION} on main; skipping commit"
           fi
