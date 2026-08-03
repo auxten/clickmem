@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,14 +28,15 @@ from clickmem import __version__
 from clickmem import adapters as adapters_mod
 from clickmem import agents as agents_mod
 from clickmem import blacklist as blacklist_mod
-from clickmem import conflicts as conflicts_mod
 from clickmem import events as events_mod
 from clickmem import history as history_mod
 from clickmem import import_docs as import_docs_mod
 from clickmem import memories as memories_mod
+from clickmem import pickup as pickup_mod
 from clickmem import projects as projects_mod
 from clickmem import raw as raw_mod
 from clickmem import recall as recall_mod
+from clickmem import scopes as scopes_mod
 from clickmem import stats as stats_mod
 from clickmem.backend import get_backend
 from clickmem.config import get_config
@@ -45,6 +46,9 @@ _log = logging.getLogger(__name__)
 
 
 # ---------- Pydantic request models ---------------------------------------
+
+WriteScope = Literal["personal", "project"]
+ReadScope = Literal["personal", "project", "all"]
 
 
 class MemoryCreate(BaseModel):
@@ -58,6 +62,7 @@ class MemoryCreate(BaseModel):
     pinned: bool = False
     revises_id: str = ""
     agent: str = ""
+    scope: WriteScope = "personal"
 
 
 class MemoryPatch(BaseModel):
@@ -69,6 +74,7 @@ class MemoryPatch(BaseModel):
     pinned: Optional[bool] = None
     revises_id: Optional[str] = None
     agent: str = ""
+    scope: WriteScope = "personal"
 
 
 class MemoryBulkRequest(BaseModel):
@@ -76,6 +82,7 @@ class MemoryBulkRequest(BaseModel):
     op: str
     payload: dict = Field(default_factory=dict)
     agent: str = ""
+    scope: WriteScope = "personal"
 
 
 class RecallRequest(BaseModel):
@@ -89,6 +96,7 @@ class RecallRequest(BaseModel):
     tag_mode: str = "any"
     timeout_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
     agent: str = ""
+    scope: ReadScope = "all"
 
 
 class BlacklistCreate(BaseModel):
@@ -100,6 +108,7 @@ class BlacklistCreate(BaseModel):
 class ConflictResolveRequest(BaseModel):
     op: str
     peer_id: str = ""
+    scope: WriteScope = "personal"
 
 
 class ProjectLinkRequest(BaseModel):
@@ -124,6 +133,49 @@ class EventCreate(BaseModel):
     memory_id: str = ""
     message: str = ""
     payload: dict = Field(default_factory=dict)
+
+
+class PickupProposal(BaseModel):
+    content: str
+    kind: str = "free"
+    tags: List[str] = Field(default_factory=list)
+    suggested_scope: WriteScope = "personal"
+    reason: str = ""
+    evidence: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class PickupSessionCreate(BaseModel):
+    session_id: str
+    agent: str
+    source_hash: str
+    project_id: str = ""
+    cwd: str = ""
+    text: str = ""
+    meta: dict = Field(default_factory=dict)
+    candidates: List[PickupProposal] = Field(default_factory=list)
+
+
+class PickupRunCreate(BaseModel):
+    run_id: str
+    summarizer: str
+    prompt_version: str
+    since_at: str = ""
+    sessions: List[PickupSessionCreate] = Field(default_factory=list)
+
+
+class PickupAcceptRequest(BaseModel):
+    version: int = Field(ge=1)
+    scope: WriteScope
+    content: Optional[str] = None
+    kind: Optional[str] = None
+    tags: Optional[List[str]] = None
+    agent: str = "pickup"
+
+
+class PickupDecisionRequest(BaseModel):
+    version: int = Field(ge=1)
+    reason: str = "temporary"
 
 
 # ---------- App factory ---------------------------------------------------
@@ -173,6 +225,28 @@ def create_app() -> FastAPI:
 
     auth = _auth_dependency()
 
+    def _checked_scope_result(result: Any) -> Any:
+        if isinstance(result, dict) and result.get("status") == "cas_conflict":
+            raise HTTPException(status_code=409, detail=result)
+        return result
+
+    @app.exception_handler(scopes_mod.ProjectScopeUnavailable)
+    async def _project_scope_unavailable(_request: Request, exc: Exception):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(scopes_mod.ProjectWorkerError)
+    async def _project_worker_error(_request: Request, exc: Exception):
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(pickup_mod.CandidateVersionConflict)
+    async def _pickup_version_conflict(
+        _request: Request, exc: pickup_mod.CandidateVersionConflict
+    ):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "stale pickup candidate", "candidate": exc.candidate.to_dict()},
+        )
+
     async def _memory_embedding_worker() -> None:
         """Drain queued memory embeddings without keeping write clients waiting."""
         event: asyncio.Event = app.state.memory_worker_event
@@ -184,6 +258,13 @@ def create_app() -> FastAPI:
                 except asyncio.TimeoutError:
                     pass
                 event.clear()
+
+                # ship any deferred audit writes that have waited too long
+                # (no-op for backends that never defer)
+                try:
+                    await asyncio.to_thread(get_backend().maybe_flush)
+                except Exception as e:  # noqa: BLE001
+                    _log.debug("maybe_flush failed: %s", e)
 
                 while True:
                     result = await asyncio.to_thread(memories_mod.process_pending_embeddings, 32)
@@ -291,9 +372,12 @@ def create_app() -> FastAPI:
         search: Optional[str] = None,
         offset: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=500),
+        scope: WriteScope = "personal",
     ):
+        from clickmem.transport import LocalTransport
+
         return await asyncio.to_thread(
-            memories_mod.list_paginated,
+            LocalTransport().list_memories,
             project_id=project_id,
             privacy=privacy,
             kind=kind,
@@ -303,52 +387,94 @@ def create_app() -> FastAPI:
             search=search,
             offset=offset,
             limit=limit,
+            scope=scope,
         )
 
     @app.post("/v1/memories", dependencies=[Depends(auth)])
     async def memories_create(body: MemoryCreate):
         try:
-            result = await asyncio.to_thread(
-                memories_mod.queue_add,
-                body.content,
-                kind=body.kind,
-                source=body.source,
-                source_ref=body.source_ref,
-                project_id=body.project_id,
-                privacy=body.privacy,
-                tags=body.tags,
-                pinned=body.pinned,
-                revises_id=body.revises_id,
-                agent=body.agent,
-            )
+            scope = scopes_mod.normalise_write_scope(body.scope)
+            if scope == "project":
+                result = await asyncio.to_thread(
+                    scopes_mod.remember_project,
+                    body.content,
+                    kind=body.kind,
+                    source=body.source,
+                    source_ref=body.source_ref,
+                    project_id=body.project_id or "",
+                    privacy=body.privacy,
+                    tags=body.tags,
+                    pinned=body.pinned,
+                    revises_id=body.revises_id,
+                    agent=body.agent,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    memories_mod.queue_add,
+                    body.content,
+                    kind=body.kind,
+                    source=body.source,
+                    source_ref=body.source_ref,
+                    project_id=body.project_id,
+                    privacy=body.privacy,
+                    tags=body.tags,
+                    pinned=body.pinned,
+                    revises_id=body.revises_id,
+                    agent=body.agent,
+                )
+                result.setdefault("scope", "personal")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except scopes_mod.ProjectScopeUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except scopes_mod.ProjectWorkerError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+        if result.get("status") == "cas_conflict":
+            raise HTTPException(status_code=409, detail=result)
         if result.get("status") == "queued":
             _kick_memory_worker()
         return result
 
     @app.post("/v1/memories/bulk", dependencies=[Depends(auth)])
     async def memories_bulk(body: MemoryBulkRequest):
-        return await asyncio.to_thread(
+        if scopes_mod.normalise_write_scope(body.scope) == "project":
+            result = await asyncio.to_thread(
+                scopes_mod.run_project_operation,
+                "bulk",
+                {
+                    "ids": body.ids,
+                    "op": body.op,
+                    "payload": body.payload,
+                    "agent": body.agent,
+                },
+            )
+            return _checked_scope_result(result)
+        result = await asyncio.to_thread(
             memories_mod.bulk,
             body.ids,
             body.op,
             payload=body.payload,
             agent=body.agent,
         )
+        result["scope"] = "personal"
+        return result
 
     @app.get("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
-    async def memories_get(memory_id: str):
-        item = await asyncio.to_thread(memories_mod.get, memory_id)
-        if item is None:
+    async def memories_get(memory_id: str, scope: WriteScope = "personal"):
+        from clickmem.transport import LocalTransport
+
+        result = await asyncio.to_thread(LocalTransport().show, memory_id, scope=scope)
+        if result.get("status") == "missing":
             raise HTTPException(status_code=404, detail="memory not found")
-        return item.to_dict()
+        return result["memory"]
 
     @app.patch("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
     async def memories_patch(memory_id: str, body: MemoryPatch):
+        from clickmem.transport import LocalTransport
+
         try:
-            return await asyncio.to_thread(
-                memories_mod.edit,
+            result = await asyncio.to_thread(
+                LocalTransport().edit,
                 memory_id,
                 content=body.content,
                 kind=body.kind,
@@ -358,34 +484,75 @@ def create_app() -> FastAPI:
                 pinned=body.pinned,
                 revises_id=body.revises_id,
                 agent=body.agent,
+                scope=body.scope,
             )
+            return _checked_scope_result(result)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.delete("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
-    async def memories_delete(memory_id: str, reason: str = "", agent: str = ""):
-        return await asyncio.to_thread(memories_mod.forget, memory_id, reason=reason, agent=agent)
+    async def memories_delete(memory_id: str, reason: str = "", agent: str = "", scope: WriteScope = "personal"):
+        from clickmem.transport import LocalTransport
+
+        result = await asyncio.to_thread(
+            LocalTransport().forget, memory_id, reason=reason, agent=agent, scope=scope
+        )
+        return _checked_scope_result(result)
 
     @app.get("/v1/memories/{memory_id}/history", dependencies=[Depends(auth)])
-    async def memories_history(memory_id: str):
+    async def memories_history(memory_id: str, scope: WriteScope = "personal"):
+        if scopes_mod.normalise_write_scope(scope) == "project":
+            result = await asyncio.to_thread(
+                scopes_mod.run_project_operation, "history", {"memory_id": memory_id}
+            )
+            return result.get("items", [])
         return await asyncio.to_thread(history_mod.history_with_diffs, memory_id)
 
     @app.get("/v1/memories/{memory_id}/neighbors", dependencies=[Depends(auth)])
-    async def memories_neighbors(memory_id: str, limit: int = Query(10, ge=1, le=50)):
+    async def memories_neighbors(
+        memory_id: str,
+        limit: int = Query(10, ge=1, le=50),
+        scope: WriteScope = "personal",
+    ):
+        if scopes_mod.normalise_write_scope(scope) == "project":
+            result = await asyncio.to_thread(
+                scopes_mod.run_project_operation,
+                "neighbors",
+                {"memory_id": memory_id, "limit": limit},
+            )
+            return result.get("neighbors", [])
         return await asyncio.to_thread(memories_mod.neighbors, memory_id, limit=limit)
 
     # ---------- Conflicts -------------------------------------------------
 
     @app.get("/v1/conflicts", dependencies=[Depends(auth)])
-    async def conflicts_list(project_id: Optional[str] = None, limit: int = Query(200, ge=1, le=1000)):
-        return await asyncio.to_thread(conflicts_mod.list_conflicts, project_id=project_id, limit=limit)
+    async def conflicts_list(
+        project_id: Optional[str] = None,
+        limit: int = Query(200, ge=1, le=1000),
+        scope: WriteScope = "personal",
+    ):
+        from clickmem.transport import LocalTransport
+
+        return await asyncio.to_thread(
+            LocalTransport().conflicts,
+            project_id=project_id,
+            scope=scope,
+            limit=limit,
+        )
 
     @app.post("/v1/conflicts/{memory_id}/resolve", dependencies=[Depends(auth)])
     async def conflicts_resolve(memory_id: str, body: ConflictResolveRequest):
+        from clickmem.transport import LocalTransport
+
         try:
-            return await asyncio.to_thread(
-                conflicts_mod.resolve, memory_id, body.op, peer_id=body.peer_id
+            result = await asyncio.to_thread(
+                LocalTransport().resolve,
+                memory_id,
+                body.op,
+                peer_id=body.peer_id,
+                scope=body.scope,
             )
+            return _checked_scope_result(result)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -394,10 +561,11 @@ def create_app() -> FastAPI:
     @app.post("/v1/recall", dependencies=[Depends(auth)])
     async def recall_endpoint(body: RecallRequest):
         try:
-            hits = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 asyncio.to_thread(
-                    recall_mod.recall,
+                    scopes_mod.recall_scoped,
                     body.query,
+                    scope=body.scope,
                     project_id=body.project_id,
                     limit=body.limit,
                     include_confidential=body.include_confidential,
@@ -409,7 +577,6 @@ def create_app() -> FastAPI:
                 ),
                 timeout=body.timeout_seconds,
             )
-            return {"hits": [h.to_dict() for h in hits], "timeout": False}
         except asyncio.TimeoutError:
             _log.warning("recall timed out after %.2fs", body.timeout_seconds)
             return {
@@ -430,8 +597,9 @@ def create_app() -> FastAPI:
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
-                    recall_mod.recall_trace,
+                    scopes_mod.recall_trace_scoped,
                     body.query,
+                    scope=body.scope,
                     project_id=body.project_id,
                     limit=body.limit,
                     include_confidential=body.include_confidential,
@@ -454,6 +622,7 @@ def create_app() -> FastAPI:
                     "kind": body.kind,
                     "tags": body.tags,
                     "tag_mode": body.tag_mode,
+                    "scope": body.scope,
                 },
                 "hits": [],
                 "candidates": [],
@@ -471,6 +640,7 @@ def create_app() -> FastAPI:
                     "kind": body.kind,
                     "tags": body.tags,
                     "tag_mode": body.tag_mode,
+                    "scope": body.scope,
                 },
                 "hits": [],
                 "candidates": [],
@@ -565,6 +735,105 @@ def create_app() -> FastAPI:
         # Dashboard uses /v1/get-raw; the plan documents both spellings.
         return await raw_get(session_id=session_id, agent=agent, last=last)  # type: ignore[misc]
 
+    # ---------- Daily Pickup --------------------------------------------
+
+    @app.post("/v1/pickup/runs", dependencies=[Depends(auth)])
+    async def pickup_runs_create(body: PickupRunCreate):
+        sessions = [session.model_dump() for session in body.sessions]
+
+        def _land_run() -> dict[str, Any]:
+            # The personal actor is the only process that lands evidence and
+            # proposals. The external daily job never opens DAO/chDB.
+            for session in sessions:
+                raw_mod.append(
+                    session.get("text", ""),
+                    session_id=session["session_id"],
+                    agent=session["agent"],
+                    project_id=session.get("project_id", ""),
+                    role="session",
+                    meta={**(session.get("meta") or {}), "pickup_run_id": body.run_id},
+                )
+            return pickup_mod.ingest_run(
+                run_id=body.run_id,
+                summarizer=body.summarizer,
+                prompt_version=body.prompt_version,
+                since_at=body.since_at,
+                sessions=sessions,
+            )
+
+        return await asyncio.to_thread(_land_run)
+
+    @app.get("/v1/pickup/runs", dependencies=[Depends(auth)])
+    async def pickup_runs_list(limit: int = Query(30, ge=1, le=500)):
+        return await asyncio.to_thread(pickup_mod.list_runs, limit)
+
+    @app.get("/v1/pickup/candidates", dependencies=[Depends(auth)])
+    async def pickup_candidates_list(
+        status: Optional[str] = "pending",
+        project_id: Optional[str] = None,
+        source_agent: Optional[str] = None,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=500),
+    ):
+        try:
+            selected_status = None if status in {None, "", "all"} else status
+            return await asyncio.to_thread(
+                pickup_mod.list_candidates,
+                status=selected_status,
+                project_id=project_id,
+                source_agent=source_agent,
+                offset=offset,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/accept", dependencies=[Depends(auth)])
+    async def pickup_candidates_accept(candidate_id: str, body: PickupAcceptRequest):
+        try:
+            result = await asyncio.to_thread(
+                pickup_mod.accept,
+                candidate_id,
+                version=body.version,
+                scope=body.scope,
+                content=body.content,
+                kind=body.kind,
+                tags=body.tags,
+                agent=body.agent,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        memory_result = result.get("memory") or {}
+        if memory_result.get("status") == "cas_conflict":
+            raise HTTPException(status_code=409, detail=result)
+        return result
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/dismiss", dependencies=[Depends(auth)])
+    async def pickup_candidates_dismiss(candidate_id: str, body: PickupDecisionRequest):
+        try:
+            return await asyncio.to_thread(
+                pickup_mod.dismiss,
+                candidate_id,
+                version=body.version,
+                reason=body.reason,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/snooze", dependencies=[Depends(auth)])
+    async def pickup_candidates_snooze(candidate_id: str, body: PickupDecisionRequest):
+        try:
+            return await asyncio.to_thread(
+                pickup_mod.snooze,
+                candidate_id,
+                version=body.version,
+                reason=body.reason or "later",
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
+
     # ---------- Agents ----------------------------------------------------
 
     @app.get("/v1/agents", dependencies=[Depends(auth)])
@@ -640,11 +909,16 @@ def create_app() -> FastAPI:
         app.mount("/sse", sse_app)
     except Exception as e:  # pragma: no cover - mount best-effort during dev
         _log.warning("MCP SSE mount failed: %s", e)
+        sse_error_detail = str(e)
 
         @app.get("/sse")
         async def _sse_unavailable():
             return JSONResponse(
-                {"ok": False, "error": "MCP SSE unavailable", "detail": str(e)},
+                {
+                    "ok": False,
+                    "error": "MCP SSE unavailable",
+                    "detail": sse_error_detail,
+                },
                 status_code=503,
             )
 

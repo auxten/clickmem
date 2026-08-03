@@ -143,6 +143,45 @@ export interface RawRow {
   meta?: Record<string, unknown>;
 }
 
+export type PickupStatus =
+  | "pending"
+  | "accepted_personal"
+  | "accepted_project"
+  | "dismissed"
+  | "snoozed"
+  | "superseded";
+
+export interface PickupCandidate {
+  id: string;
+  run_id: string;
+  source_agent: string;
+  session_id: string;
+  source_hash: string;
+  project_id: string;
+  cwd: string;
+  content: string;
+  kind: MemoryKind;
+  tags: string[];
+  suggested_scope: "personal" | "project";
+  reason: string;
+  evidence: string;
+  confidence: number;
+  status: PickupStatus;
+  decision_reason: string;
+  memory_ref: string;
+  version: number;
+  prompt_version: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PickupListResponse {
+  total: number;
+  offset: number;
+  limit: number;
+  items: PickupCandidate[];
+}
+
 export interface RecallHit {
   id: string;
   content: string;
@@ -454,6 +493,47 @@ export const api = {
   // ---- Raw ------------------------------------------------------------
   getRaw: (params: { session_id?: string; agent?: string; last?: number }) =>
     request<RawRow[]>("GET", "/v1/get-raw", undefined, params as Record<string, unknown>),
+
+  // ---- Daily Pickup ----------------------------------------------------
+  listPickupCandidates: (params: {
+    status?: string;
+    project_id?: string;
+    source_agent?: string;
+    offset?: number;
+    limit?: number;
+  } = {}) =>
+    request<PickupListResponse>(
+      "GET",
+      "/v1/pickup/candidates",
+      undefined,
+      params as Record<string, unknown>,
+    ),
+
+  acceptPickupCandidate: (id: string, body: {
+    version: number;
+    scope: "personal" | "project";
+    content?: string;
+    kind?: MemoryKind;
+    tags?: string[];
+  }) => request<{
+    accepted: boolean;
+    candidate: PickupCandidate;
+    memory: MemoryMutationResult;
+  }>("POST", `/v1/pickup/candidates/${encodeURIComponent(id)}/accept`, body),
+
+  dismissPickupCandidate: (id: string, version: number, reason = "temporary") =>
+    request<PickupCandidate>(
+      "POST",
+      `/v1/pickup/candidates/${encodeURIComponent(id)}/dismiss`,
+      { version, reason },
+    ),
+
+  snoozePickupCandidate: (id: string, version: number) =>
+    request<PickupCandidate>(
+      "POST",
+      `/v1/pickup/candidates/${encodeURIComponent(id)}/snooze`,
+      { version, reason: "later" },
+    ),
 
   // ---- Agents ---------------------------------------------------------
   listAgents: () => request<AgentRow[]>("GET", "/v1/agents"),

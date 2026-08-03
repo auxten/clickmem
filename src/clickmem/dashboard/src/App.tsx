@@ -12,6 +12,7 @@ import MemoriesPage from "./pages/Memories";
 import ConflictsPage from "./pages/Conflicts";
 import RecallLabPage from "./pages/RecallLab";
 import RawTranscriptsPage from "./pages/RawTranscripts";
+import PickupPage from "./pages/Pickup";
 import AgentsPage from "./pages/Agents";
 import ImportsPage from "./pages/Imports";
 import BlacklistPage from "./pages/Blacklist";
@@ -23,6 +24,7 @@ const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   "/conflicts": { title: "Conflicts", subtitle: "Pairs the system flagged as semantically clashing" },
   "/recall": { title: "Recall Lab", subtitle: "Inspect scoring step by step" },
   "/raw": { title: "Raw transcripts", subtitle: "Cold storage — never read by recall" },
+  "/pickup": { title: "Pickup Inbox", subtitle: "AI prepares candidates; you decide what becomes memory" },
   "/pinned": { title: "Pinned", subtitle: "User-curated memories immune to revision" },
   "/imports": { title: "Imports", subtitle: "Per-adapter ingestion view" },
   "/agents": { title: "Agents", subtitle: "Adapter health and hook install state" },
@@ -79,6 +81,11 @@ function Shell() {
     { pollMs: 60_000, deps: [refreshTick] },
   );
 
+  const pickupQ = useApi(() => api.listPickupCandidates({ status: "pending", limit: 1 }), {
+    pollMs: 30_000,
+    deps: [refreshTick],
+  });
+
   const pinnedRecentCount = useMemo(() => {
     const items = pinnedRecentQ.data || [];
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -115,8 +122,10 @@ function Shell() {
       ? "/recall"
       : location.pathname.startsWith("/raw")
         ? "/raw"
-        : location.pathname.startsWith("/conflicts")
-          ? "/conflicts"
+        : location.pathname.startsWith("/pickup")
+          ? "/pickup"
+          : location.pathname.startsWith("/conflicts")
+            ? "/conflicts"
           : location.pathname.startsWith("/pinned")
             ? "/pinned"
             : location.pathname.startsWith("/imports")
@@ -137,6 +146,7 @@ function Shell() {
         pinnedRecentCount={pinnedRecentCount}
         agentsOnline={agentsOnline}
         agentsTotal={agentsTotal}
+        pickupCount={pickupQ.data?.total || 0}
         identity={identity}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -157,6 +167,7 @@ function Shell() {
             <Route path="/conflicts" element={<ConflictsPage refreshTick={refreshTick} />} />
             <Route path="/recall" element={<RecallLabPage />} />
             <Route path="/raw" element={<RawTranscriptsPage refreshTick={refreshTick} />} />
+            <Route path="/pickup" element={<PickupPage refreshTick={refreshTick} />} />
             <Route path="/agents" element={<AgentsPage refreshTick={refreshTick} />} />
             <Route path="/imports" element={<ImportsPage refreshTick={refreshTick} />} />
             <Route path="/blacklist" element={<BlacklistPage refreshTick={refreshTick} />} />

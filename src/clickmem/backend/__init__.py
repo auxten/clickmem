@@ -29,6 +29,19 @@ class Backend(Protocol):
         """Run an INSERT / ALTER / DDL statement (no results expected)."""
         ...
 
+    def execute_lazy(self, sql: str) -> None:
+        """Like ``execute`` but durability may lag until the next flush
+        boundary. For audit-class writes (events, raw evidence) that must not
+        add upload latency to hot paths; losing the tail on a crash is
+        acceptable. Local and server backends treat this as ``execute``."""
+        ...
+
+    def maybe_flush(self) -> None:
+        """Housekeeping hook: ship deferred work if it has waited too long.
+        Called opportunistically (background worker, periodic paths). No-op
+        for backends that never defer."""
+        ...
+
     def vector_search(
         self,
         table: str,
@@ -74,6 +87,15 @@ def get_backend(refresh: bool = False) -> Backend:
             password=cfg.ch_password,
             database=cfg.ch_database,
             embed_dim=cfg.embedding_dim,
+        )
+    elif choice in ("durable", "dao"):
+        from clickmem.backend.durable import DurableBackend
+
+        _singleton = DurableBackend(
+            url=cfg.durable_url,
+            oid=cfg.durable_id,
+            embed_dim=cfg.embedding_dim,
+            db=cfg.ch_database,
         )
     else:
         raise ValueError(f"Unknown CLICKMEM_BACKEND: {choice!r}")

@@ -40,6 +40,11 @@ def test_mcp_server_lists_expected_tools(backend):
         "clickmem_conflicts",
         "clickmem_resolve",
         "clickmem_get_raw",
+        "clickmem_pickup_list",
+        "clickmem_pickup_accept",
+        "clickmem_pickup_dismiss",
+        "clickmem_pickup_snooze",
+        "clickmem_pickup_submit",
         "clickmem_project",
         "clickmem_review_dedup",
     }
@@ -61,6 +66,13 @@ def test_mcp_tool_input_schemas_have_required_fields(backend):
         assert params is not None
         if getattr(tool, "name", "") == "clickmem_remember":
             assert {"content", "project_id", "tags"}.issubset(set(params.get("required", [])))
+            assert params["properties"]["scope"]["enum"] == ["personal", "project"]
+        if getattr(tool, "name", "") == "clickmem_recall":
+            assert params["properties"]["scope"]["enum"] == [
+                "personal",
+                "project",
+                "all",
+            ]
 
 
 def test_mcp_sse_app_uses_mount_relative_routes(backend):

@@ -46,6 +46,14 @@ VALID_KINDS = {"principle", "decision", "fact", "doc", "free"}
 VALID_PRIVACY = {"public", "private", "confidential"}
 VALID_STATUS = {"active", "contracted", "conflicted", "embedding_failed"}
 VALID_OPS = {"expand", "revise", "contract", "pin", "unpin", "resolve"}
+VALID_PICKUP_STATUS = {
+    "pending",
+    "accepted_personal",
+    "accepted_project",
+    "dismissed",
+    "snoozed",
+    "superseded",
+}
 
 
 @dataclass
@@ -200,6 +208,67 @@ class MemoryHistoryEntry:
             edited_at=_parse_dt(row.get("edited_at")),
             prev_id=str(row.get("prev_id", "")),
             note=str(row.get("note", "")),
+        )
+
+
+@dataclass
+class PickupCandidate:
+    """An AI proposal that is intentionally invisible to recall."""
+
+    id: str = ""
+    run_id: str = ""
+    source_agent: str = ""
+    session_id: str = ""
+    source_hash: str = ""
+    project_id: str = ""
+    cwd: str = ""
+    content: str = ""
+    kind: str = "free"
+    tags: List[str] = field(default_factory=list)
+    suggested_scope: str = "personal"
+    reason: str = ""
+    evidence: str = ""
+    confidence: float = 0.0
+    status: str = "pending"
+    decision_reason: str = ""
+    memory_ref: str = ""
+    version: int = 1
+    prompt_version: str = ""
+    content_hash: str = ""
+    created_at: datetime = field(default_factory=_utc_now)
+    updated_at: datetime = field(default_factory=_utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["created_at"] = _dt_iso(self.created_at)
+        data["updated_at"] = _dt_iso(self.updated_at)
+        return data
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "PickupCandidate":
+        return cls(
+            id=str(row.get("id", "")),
+            run_id=str(row.get("run_id", "")),
+            source_agent=str(row.get("source_agent", "")),
+            session_id=str(row.get("session_id", "")),
+            source_hash=str(row.get("source_hash", "")),
+            project_id=str(row.get("project_id", "")),
+            cwd=str(row.get("cwd", "")),
+            content=str(row.get("content", "")),
+            kind=str(row.get("kind", "free")) or "free",
+            tags=list(row.get("tags") or []),
+            suggested_scope=str(row.get("suggested_scope", "personal")) or "personal",
+            reason=str(row.get("reason", "")),
+            evidence=str(row.get("evidence", "")),
+            confidence=float(row.get("confidence", 0.0) or 0.0),
+            status=str(row.get("status", "pending")) or "pending",
+            decision_reason=str(row.get("decision_reason", "")),
+            memory_ref=str(row.get("memory_ref", "")),
+            version=int(row.get("version", 1) or 1),
+            prompt_version=str(row.get("prompt_version", "")),
+            content_hash=str(row.get("content_hash", "")),
+            created_at=_parse_dt(row.get("created_at")),
+            updated_at=_parse_dt(row.get("updated_at")),
         )
 
 

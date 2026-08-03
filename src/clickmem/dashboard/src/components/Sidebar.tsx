@@ -7,6 +7,7 @@ import {
   Database,
   FileText,
   Import,
+  Inbox,
   LayoutDashboard,
   Library,
   Pin,
@@ -21,6 +22,7 @@ interface SidebarProps {
   pinnedRecentCount: number;
   agentsOnline: number;
   agentsTotal: number;
+  pickupCount: number;
   identity?: string;
 }
 
@@ -39,11 +41,13 @@ export function Sidebar({
   pinnedRecentCount,
   agentsOnline,
   agentsTotal,
+  pickupCount,
   identity,
 }: SidebarProps) {
   const main: NavItem[] = [
     { to: "/", icon: <LayoutDashboard size={ICON_SIZE} />, label: "Overview", end: true },
     { to: "/memories", icon: <Library size={ICON_SIZE} />, label: "Memories" },
+    { to: "/pickup", icon: <Inbox size={ICON_SIZE} />, label: "Pickup Inbox", badge: pickupCount },
     { to: "/conflicts", icon: <AlertTriangle size={ICON_SIZE} />, label: "Conflicts" },
     { to: "/recall", icon: <Sparkles size={ICON_SIZE} />, label: "Recall Lab" },
     { to: "/raw", icon: <FileText size={ICON_SIZE} />, label: "Raw transcripts" },

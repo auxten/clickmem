@@ -8,13 +8,15 @@ This page keeps the operational details out of the main README. It covers CLI us
 pip install clickmem
 clickmem service install        # background server on :9527
 clickmem hooks install          # install hooks for detected agents
+clickmem pickup setup           # daily Codex/Claude candidate inbox
 clickmem dashboard open         # http://127.0.0.1:9527/dashboard
 ```
 
 ## Core Memory Commands
 
 ```bash
-clickmem remember "..." --project owner/repo --tag workflow
+clickmem remember "..." --project owner/repo --tag workflow --scope personal
+clickmem remember "..." --project owner/repo --tag decision --scope project
 clickmem list --project-id X --kind principle --json
 clickmem show <id> --json
 clickmem edit <id> --content "..." --privacy public --pin
@@ -24,7 +26,7 @@ clickmem blacklist add "internal-only stuff" --scope global --reason "leaks"
 clickmem blacklist add id:abc-123 --reason "outdated"
 clickmem conflicts
 clickmem resolve <id> --revise <peer_id>    # or --contract / --allow
-clickmem recall "your query" --project owner/repo --tags workflow,deploy --timeout 5 --json
+clickmem recall "your query" --project owner/repo --tags workflow,deploy --scope all --timeout 5 --json
 clickmem recall-trace "your query" --project-id owner/repo --tag workflow --json
 clickmem get-raw <session_id> [--last N]
 ```
@@ -88,6 +90,35 @@ It skips likely noise:
 
 `AGENTS.md` is parsed bullet by bullet. Each bullet becomes a discrete, idempotent memory.
 
+### Daily Pickup
+
+Daily Pickup scans recent local Codex and Claude Code sessions, removes common
+credentials, and invokes an existing non-interactive agent CLI to prepare zero
+or more atomic proposals. The job never opens chDB/DAO: it submits sanitized
+raw evidence and proposals to the personal ClickMem actor. If the actor is
+offline, it spools the batch under `~/.clickmem/pickup/spool` for the next run.
+
+```bash
+clickmem pickup setup --summarizer auto --hour 18 --minute 0
+clickmem pickup now                 # manual run
+clickmem pickup review              # open /dashboard/pickup
+clickmem pickup list
+clickmem pickup accept <id> --version <n> --scope personal
+clickmem pickup accept <id> --version <n> --scope project
+clickmem pickup dismiss <id> --version <n> --reason temporary
+```
+
+| Data | Recallable | Writer |
+| --- | :-: | --- |
+| Sanitized raw transcript | no | Personal ClickMem actor |
+| Pickup candidate | no | Personal ClickMem actor |
+| Accepted personal/project memory | yes | Normal Memory API; project writes use CAS |
+
+Candidate acceptance requires its current version and an explicit scope. A
+stale review returns HTTP 409. Project acceptance follows the same immediate
+CAS/conflict detection as any other project memory. There is deliberately no
+"accept all automatically" operation.
+
 ## Managing Memories
 
 | Action | Meaning | CLI |
@@ -143,6 +174,7 @@ Main areas:
 - Conflicts
 - Recall Lab
 - Raw transcripts
+- Pickup Inbox
 - Agents
 - Imports
 - Blacklist
@@ -177,12 +209,67 @@ clickmem hooks install --agent claude-code
 
 ## Storage Backends
 
-Choose the backend at server start with `CLICKMEM_BACKEND`. Schema is identical across both.
+Choose the backend at server start with `CLICKMEM_BACKEND`. The schema is identical across all three.
 
 | Backend | Use when | Configuration |
 | --- | --- | --- |
 | chDB (default) | Single-machine or LAN-shared from one host | `CLICKMEM_BACKEND=local`; `CLICKMEM_DB_PATH=~/.clickmem/data` |
 | ClickHouse Cloud / self-hosted | Multi-device without a relay host, or larger-than-disk corpora | `CLICKMEM_BACKEND=clickhouse` plus ClickHouse connection variables |
+| Durable (object storage) | Persistent memory that follows you across machines/restarts without running a server (agents in Lambda, CI, sandboxes) | `CLICKMEM_BACKEND=durable`; `CLICKMEM_DURABLE_URL=s3://bucket/prefix` (or `gcs://`, `azure://`, `local:/path`); `CLICKMEM_DURABLE_ID=<store>` |
+
+The durable backend keeps the database in object storage you own: memory writes are saved before they return, recall reads a local copy, and one writer holds the store at a time. It requires a `chdb` release that ships `chdb.durable` — until then it stays inactive.
+
+### Team memory: personal actor + shared project store
+
+Configure the normal durable backend as the user's personal store, then add a
+second durable location for shared project memory:
+
+```bash
+export CLICKMEM_BACKEND=durable
+export CLICKMEM_DURABLE_URL=s3://company-memory/chdb-cn/users
+export CLICKMEM_DURABLE_ID=shawn
+
+export CLICKMEM_PROJECT_DURABLE_URL=s3://company-memory/chdb-cn/projects
+export CLICKMEM_PROJECT_DURABLE_ID=chdb-io
+```
+
+The local ClickMem process remains the single writer for the personal store.
+Raw transcripts and hot-path session/recall audit events land there, including
+sessions from multiple local Codex and Claude processes. Project mutation
+history stays with the shared project object.
+
+Project memory is cold and deliberate. `scope=project` launches a bundled
+one-shot helper process, opens the project DAO at its latest revision, runs
+conflict detection, and publishes the memory, history, and audit rows as one
+WAL segment through the object store's ETag compare-and-set. A concurrent
+writer is retried briefly against the latest revision; continued contention
+returns HTTP 409 with `status=cas_conflict`. No team server or separately
+deployed actor is required. Object-store IAM on the project prefix defines
+team membership.
+
+```bash
+clickmem remember "chDB release wheels must include chdb.durable" \
+  --project chdb-io/chdb --tag release --scope project
+
+clickmem recall "what are the release requirements?" \
+  --project chdb-io/chdb --scope all --json
+```
+
+Read scope is `personal`, `project`, or `all` (the recall default). Write scope
+is `personal` or `project` (the write default remains `personal`). Project
+scope requires a real `project_id`; global memories stay personal.
+
+### Selecting a store (durable / local)
+
+A *store* is one whole memory database. Your active choice is recorded per user in `~/.clickmem/stores.json` (never in the repo, so teammates can keep separate memories for the same project). The environment variable, when set, always wins over the record.
+
+| Command | MCP | Does |
+| --- | --- | --- |
+| `clickmem store list` | `clickmem_store(op="list")` | Show available stores for the current backend |
+| `clickmem store use <id>` | `clickmem_store(op="use", id=...)` | Switch stores (applies on next start) |
+| `clickmem store new [--id NAME] [--desc TEXT]` | `clickmem_store(op="new", id=..., description=...)` | Create a fresh empty store and switch to it |
+
+One store holds any number of projects — use `--project`/`project_id` for per-project scoping, not one store per project.
 
 ## Import And Export
 
@@ -232,6 +319,11 @@ Agents should prefer MCP tools when available. When only shell access is availab
 | `clickmem get-raw` | `clickmem_get_raw` |
 | `clickmem recall-trace` | `clickmem_recall_trace` |
 | `clickmem project link` | `clickmem_project` |
+| `clickmem store list/use/new` | `clickmem_store` |
+| `clickmem pickup list` | `clickmem_pickup_list` |
+| `clickmem pickup accept` | `clickmem_pickup_accept` |
+| `clickmem pickup dismiss` | `clickmem_pickup_dismiss` |
+| `clickmem pickup snooze` | `clickmem_pickup_snooze` |
 
 ## REST Surface
 
@@ -246,6 +338,8 @@ Representative endpoints:
 - `/v1/blacklist`
 - `/v1/projects`
 - `/v1/raw`
+- `/v1/pickup/runs`
+- `/v1/pickup/candidates`
 - `/v1/agents`
 - `/v1/events`
 - `/v1/stats/*`
@@ -260,12 +354,25 @@ Representative endpoints:
 | `CLICKMEM_SERVER_PORT` | `9527` | HTTP port for REST, MCP SSE, and dashboard |
 | `CLICKMEM_REMOTE` | unset | Point CLI/MCP at a LAN server |
 | `CLICKMEM_API_KEY` | unset | Bearer token, required for non-loopback bind |
-| `CLICKMEM_BACKEND` | `local` | `local` or `clickhouse` |
+| `CLICKMEM_BACKEND` | `local` | `local`, `clickhouse`, or `durable` |
 | `CLICKMEM_DB_PATH` | `~/.clickmem/data` | chDB data dir for local backend |
 | `CLICKMEM_CH_URL` | unset | ClickHouse Cloud or self-hosted URL |
 | `CLICKMEM_CH_USER` | unset | ClickHouse user |
 | `CLICKMEM_CH_PASSWORD` | unset | ClickHouse password |
 | `CLICKMEM_CH_DATABASE` | `clickmem` | ClickHouse database |
+| `CLICKMEM_DURABLE_URL` | unset | Object-storage location for the durable backend (`s3://`, `gcs://`, `azure://`, or `local:/path`) |
+| `CLICKMEM_DURABLE_ID` | `default` | Store id within that location (see Selecting a store) |
+| `CLICKMEM_PROJECT_DURABLE_URL` | unset | Optional object-storage namespace for shared project memory |
+| `CLICKMEM_PROJECT_DURABLE_ID` | `team` | Shared project store id inside the project namespace |
+| `CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS` | `3` | Seconds to retry CAS/lease contention before returning HTTP 409 |
+| `CLICKMEM_PICKUP_AGENTS` | `codex,claude_code` | Comma-separated local transcript adapters scanned by Daily Pickup |
+| `CLICKMEM_PICKUP_SUMMARIZER` | `auto` | `auto`, `codex`, `claude`, or `command` |
+| `CLICKMEM_PICKUP_COMMAND` | unset | Custom non-interactive summarizer command; JSON is read from stdout |
+| `CLICKMEM_PICKUP_LOOKBACK_HOURS` | `26` | Daily session scan window; idempotent candidate ids prevent duplicates |
+| `CLICKMEM_PICKUP_MAX_SESSION_CHARS` | `60000` | Sanitized transcript cap per model call |
+| `CLICKMEM_PICKUP_HOUR` / `CLICKMEM_PICKUP_MINUTE` | `18` / `0` | Default local timer schedule |
+| `CLICKMEM_PICKUP_NOTIFY` | `true` | Show a best-effort OS notification when a daily batch is ready |
+| `CLICKMEM_PICKUP_SPOOL_DIR` | `~/.clickmem/pickup/spool` | Offline batch queue when the actor is unavailable |
 | `CLICKMEM_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
 | `CLICKMEM_CONFLICT_THRESHOLD` | `0.92` | Cosine similarity above which divergent content is flagged as a conflict |
 | `CLICKMEM_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |

@@ -28,7 +28,7 @@ from rich.table import Table
 
 from clickmem import __version__
 from clickmem.config import get_config
-from clickmem.transport import get_transport
+from clickmem.transport import get_actor_transport, get_transport
 
 
 app = typer.Typer(
@@ -113,6 +113,7 @@ def remember(
     source: str = typer.Option("cli"),
     source_ref: str = typer.Option(""),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Expand: commit a new memory."""
     resolved_project = _resolve_memory_scope(project_id, global_scope)
@@ -127,6 +128,7 @@ def remember(
         source=source,
         source_ref=source_ref,
         agent=agent,
+        scope=scope,
     )
     _print(result)
 
@@ -142,9 +144,10 @@ def edit(
     tags: list[str] = typer.Option([], "--tags", help="comma-separated replacement tags"),
     pinned: Optional[bool] = typer.Option(None, "--pin/--no-pin"),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Revise: edit an existing memory."""
-    kwargs: dict[str, object] = {"agent": agent}
+    kwargs: dict[str, object] = {"agent": agent, "scope": scope}
     if content is not None:
         kwargs["content"] = content
     if kind is not None:
@@ -166,21 +169,30 @@ def forget(
     memory_id: str = typer.Argument(...),
     reason: str = typer.Option(""),
     agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Contract: mark a memory contracted (excluded from recall)."""
-    _print(get_transport().forget(memory_id, reason=reason, agent=agent))
+    _print(get_transport().forget(memory_id, reason=reason, agent=agent, scope=scope))
 
 
 @app.command()
-def pin(memory_id: str = typer.Argument(...), agent: str = typer.Option("")) -> None:
+def pin(
+    memory_id: str = typer.Argument(...),
+    agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
+) -> None:
     """Reinforce: pin a memory."""
-    _print(get_transport().pin(memory_id, agent=agent))
+    _print(get_transport().pin(memory_id, agent=agent, scope=scope))
 
 
 @app.command()
-def unpin(memory_id: str = typer.Argument(...), agent: str = typer.Option("")) -> None:
+def unpin(
+    memory_id: str = typer.Argument(...),
+    agent: str = typer.Option(""),
+    scope: str = typer.Option("personal", help="personal | project"),
+) -> None:
     """Unpin a memory."""
-    _print(get_transport().unpin(memory_id, agent=agent))
+    _print(get_transport().unpin(memory_id, agent=agent, scope=scope))
 
 
 # ---------- inspection ---------------------------------------------------
@@ -200,6 +212,7 @@ def recall(
     timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
     agent: str = typer.Option(""),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("all", help="personal | project | all"),
 ) -> None:
     """Run embedding recall against the brain."""
     res = get_transport().recall(
@@ -213,6 +226,7 @@ def recall(
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
         agent=agent,
+        scope=scope,
     )
     if raw_json:
         _print(res, raw_json=True)
@@ -225,6 +239,7 @@ def recall(
         return
     table = Table(show_lines=True)
     table.add_column("score", justify="right")
+    table.add_column("scope")
     table.add_column("kind")
     table.add_column("project")
     table.add_column("privacy")
@@ -234,6 +249,7 @@ def recall(
     for h in hits:
         table.add_row(
             f"{h.get('score', 0.0):.3f}",
+            h.get("scope", "personal"),
             h.get("kind", ""),
             h.get("project_id", "") or "-",
             h.get("privacy", ""),
@@ -257,6 +273,7 @@ def recall_trace_cmd(
     tag_mode: str = typer.Option("any", "--tag-mode", help="any | all"),
     timeout_seconds: float = typer.Option(5.0, "--timeout-seconds", "--timeout", help="fail-open recall timeout"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("all", help="personal | project | all"),
 ) -> None:
     """Recall with per-candidate scoring breakdown."""
     _print(get_transport().recall_trace(
@@ -269,6 +286,7 @@ def recall_trace_cmd(
         tags=_normalize_tags(tag, tags),
         tag_mode=tag_mode,
         timeout_seconds=timeout_seconds,
+        scope=scope,
     ), raw_json=raw_json)
 
 
@@ -278,9 +296,18 @@ def show(
     history: bool = typer.Option(False, "--history"),
     neighbors: bool = typer.Option(False, "--neighbors"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Show a single memory; optionally history and neighbours."""
-    _print(get_transport().show(memory_id, with_history=history, with_neighbors=neighbors), raw_json=raw_json)
+    _print(
+        get_transport().show(
+            memory_id,
+            with_history=history,
+            with_neighbors=neighbors,
+            scope=scope,
+        ),
+        raw_json=raw_json,
+    )
 
 
 @app.command("list")
@@ -295,6 +322,7 @@ def list_cmd(
     offset: int = typer.Option(0),
     limit: int = typer.Option(50),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """List memories with filters."""
     _print(get_transport().list_memories(
@@ -307,6 +335,7 @@ def list_cmd(
         search=search,
         offset=offset,
         limit=limit,
+        scope=scope,
     ), raw_json=raw_json)
 
 
@@ -314,9 +343,10 @@ def list_cmd(
 def conflicts(
     project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
     raw_json: bool = typer.Option(False, "--json", help="emit raw JSON"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """List unresolved conflicts."""
-    _print(get_transport().conflicts(project_id=project_id), raw_json=raw_json)
+    _print(get_transport().conflicts(project_id=project_id, scope=scope), raw_json=raw_json)
 
 
 @app.command()
@@ -325,16 +355,17 @@ def resolve(
     revise: Optional[str] = typer.Option(None, "--revise", help="peer id whose conflict is resolved by your edit"),
     contract: Optional[str] = typer.Option(None, "--contract", help="peer id to contract"),
     allow: bool = typer.Option(False, "--allow", help="keep both, clear the conflict flag"),
+    scope: str = typer.Option("personal", help="personal | project"),
 ) -> None:
     """Resolve a conflict for a memory."""
     if allow:
-        _print(get_transport().resolve(memory_id, "allow"))
+        _print(get_transport().resolve(memory_id, "allow", scope=scope))
         return
     if revise:
-        _print(get_transport().resolve(memory_id, "revise", peer_id=revise))
+        _print(get_transport().resolve(memory_id, "revise", peer_id=revise, scope=scope))
         return
     if contract:
-        _print(get_transport().resolve(memory_id, "contract", peer_id=contract))
+        _print(get_transport().resolve(memory_id, "contract", peer_id=contract, scope=scope))
         return
     raise typer.BadParameter("resolve requires one of --revise / --contract / --allow")
 
@@ -394,6 +425,202 @@ def project_link_cmd(
 @project_app.command("list")
 def project_list_cmd() -> None:
     _print(get_transport().projects_list())
+
+
+# ---------- Daily Pickup -------------------------------------------------
+
+pickup_app = typer.Typer(
+    help="AI prepares candidates from local agent sessions; you explicitly pick what becomes memory.",
+    no_args_is_help=True,
+)
+app.add_typer(pickup_app, name="pickup")
+
+
+@pickup_app.command("setup")
+def pickup_setup(
+    summarizer: str = typer.Option("auto", help="auto | codex | claude | command"),
+    agent: list[str] = typer.Option([], "--agent", help="repeatable adapter (default: codex + claude_code)"),
+    hour: Optional[int] = typer.Option(None, min=0, max=23, help="daily local hour"),
+    minute: Optional[int] = typer.Option(None, min=0, max=59, help="daily local minute"),
+) -> None:
+    """Detect local agents and install the launchd/systemd daily timer."""
+    from clickmem import adapters as adapters_mod
+    from clickmem import pickup_service
+    from clickmem.pickup_sync import resolve_summarizer
+
+    cfg = get_config(refresh=True)
+    selected_agents = agent or cfg.pickup_agents
+    selected_hour = cfg.pickup_hour if hour is None else hour
+    selected_minute = cfg.pickup_minute if minute is None else minute
+    detected = {
+        name: bool(adapters_mod.get(name) and adapters_mod.get(name).detect())
+        for name in selected_agents
+    }
+    resolved, _ = resolve_summarizer(summarizer, cfg.pickup_command)
+    result = pickup_service.install(
+        hour=selected_hour,
+        minute=selected_minute,
+        summarizer=resolved,
+        agents=selected_agents,
+    )
+    _print(
+        {
+            **result,
+            "schedule": f"{selected_hour:02d}:{selected_minute:02d}",
+            "summarizer": resolved,
+            "agents": detected,
+            "promise": "AI prepares candidates; 0 memories are added automatically",
+        }
+    )
+
+
+@pickup_app.command("now")
+def pickup_now(
+    since_hours: Optional[int] = typer.Option(None, min=1, help="override lookback window"),
+    agent: list[str] = typer.Option([], "--agent", help="repeatable adapter"),
+    summarizer: Optional[str] = typer.Option(None, help="auto | codex | claude | command"),
+) -> None:
+    """Scan recent sessions, summarize them, and submit only inbox candidates."""
+    from clickmem.pickup_sync import run_daily
+
+    _print(
+        run_daily(
+            since_hours=since_hours,
+            agent_names=agent or None,
+            summarizer=summarizer,
+        )
+    )
+
+
+@pickup_app.command("list")
+def pickup_list(
+    status: str = typer.Option("pending", help="pending | dismissed | snoozed | accepted_* | all"),
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
+    source_agent: Optional[str] = typer.Option(None, "--agent"),
+    limit: int = typer.Option(100, min=1, max=500),
+) -> None:
+    """List private inbox candidates; these rows are never recalled."""
+    _print(
+        get_actor_transport().pickup_list(
+            status=None if status == "all" else status,
+            project_id=project_id,
+            source_agent=source_agent,
+            limit=limit,
+        )
+    )
+
+
+@pickup_app.command("accept")
+def pickup_accept(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1, help="version shown by pickup list"),
+    scope: str = typer.Option(..., "--scope", help="personal | project"),
+    content: Optional[str] = typer.Option(None, help="edit before accepting"),
+    kind: Optional[str] = typer.Option(None),
+    tag: list[str] = typer.Option([], "--tag"),
+) -> None:
+    """Explicitly promote one current candidate into memory."""
+    if scope not in {"personal", "project"}:
+        raise typer.BadParameter("scope must be personal or project")
+    _print(
+        get_actor_transport().pickup_accept(
+            candidate_id,
+            version=version,
+            scope=scope,
+            content=content,
+            kind=kind,
+            tags=_normalize_tags(tag) if tag else None,
+            agent="pickup-cli",
+        )
+    )
+
+
+@pickup_app.command("dismiss")
+def pickup_dismiss(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1),
+    reason: str = typer.Option("temporary"),
+) -> None:
+    """Mark a proposal as temporary or otherwise not worth remembering."""
+    _print(
+        get_actor_transport().pickup_dismiss(
+            candidate_id, version=version, reason=reason
+        )
+    )
+
+
+@pickup_app.command("snooze")
+def pickup_snooze(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1),
+    reason: str = typer.Option("later"),
+) -> None:
+    _print(
+        get_actor_transport().pickup_snooze(
+            candidate_id, version=version, reason=reason
+        )
+    )
+
+
+@pickup_app.command("review")
+def pickup_review() -> None:
+    """Open the Pickup Inbox in the dashboard."""
+    cfg = get_config(refresh=True)
+    url = f"{(cfg.remote_url or cfg.server_url()).rstrip('/')}/dashboard/pickup"
+    console.print(f"opening {url}")
+    webbrowser.open(url)
+
+
+@pickup_app.command("status")
+def pickup_status() -> None:
+    from clickmem.pickup_service import status
+
+    _print(status())
+
+
+@pickup_app.command("uninstall")
+def pickup_uninstall() -> None:
+    """Remove only the daily timer; existing candidates and memories remain."""
+    from clickmem.pickup_service import uninstall
+
+    _print(uninstall())
+
+
+store_app = typer.Typer(
+    help="Memory stores: list them, switch, create. A store is one whole "
+         "memory database; your selection is recorded per user in "
+         "~/.clickmem/stores.json (never in the repository).",
+    no_args_is_help=True,
+)
+app.add_typer(store_app, name="store")
+
+
+@store_app.command("list")
+def store_list_cmd() -> None:
+    """Show available stores for the configured backend."""
+    from clickmem.stores import store_list
+
+    _print(store_list())
+
+
+@store_app.command("use")
+def store_use_cmd(store_id: str = typer.Argument(...)) -> None:
+    """Switch to a store (applies on next service/process start)."""
+    from clickmem.stores import store_use
+
+    _print(store_use(store_id))
+
+
+@store_app.command("new")
+def store_new_cmd(
+    name: str = typer.Argument("", help="readable name; defaults to the current repo's project"),
+    store_id: str = typer.Option("", "--id", help="exact id (skips name sanitising)"),
+    description: str = typer.Option("", "--desc", help="shown in `store list`"),
+) -> None:
+    """Create a fresh empty store and switch to it."""
+    from clickmem.stores import store_new
+
+    _print(store_new(name, store_id=store_id, description=description))
 
 
 # ---------- operational ---------------------------------------------------
@@ -597,7 +824,16 @@ def wipe(
     from clickmem.backend import get_backend
 
     backend = get_backend()
-    for table in ("memories", "memory_history", "projects", "blacklist", "raw_transcripts", "events"):
+    for table in (
+        "memories",
+        "memory_history",
+        "projects",
+        "blacklist",
+        "raw_transcripts",
+        "pickup_runs",
+        "pickup_candidates",
+        "events",
+    ):
         try:
             backend.execute(f"TRUNCATE TABLE IF EXISTS {table}")
         except Exception as e:  # noqa: BLE001

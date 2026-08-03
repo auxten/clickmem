@@ -49,6 +49,10 @@ def mark_in_server_process() -> None:
     _probe_cache = None
 
 
+def in_server_process() -> bool:
+    return _in_server_process
+
+
 def reset() -> None:
     """Clear cached state (probe cache + server-process flag). Used by tests."""
     global _in_server_process, _probe_cache
@@ -179,5 +183,6 @@ __all__ = [
     "event_write",
     "raw_append",
     "mark_in_server_process",
+    "in_server_process",
     "reset",
 ]

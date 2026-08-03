@@ -10,6 +10,8 @@ Tables:
     projects          - project metadata; ReplacingMergeTree(updated_at)
     blacklist         - refused patterns; ReplacingMergeTree(updated_at)
     raw_transcripts   - cold raw landing; MergeTree
+    pickup_runs       - immutable daily-sync run summaries; MergeTree
+    pickup_candidates - AI-proposed memories awaiting an explicit user choice
     events            - mutation/integration event log; MergeTree TTL 30d
 """
 
@@ -162,6 +164,56 @@ def raw_transcripts_ddl() -> str:
     """.strip()
 
 
+def pickup_runs_ddl() -> str:
+    return """
+    CREATE TABLE IF NOT EXISTS pickup_runs (
+        id              String,
+        summarizer      LowCardinality(String) DEFAULT '',
+        prompt_version  String DEFAULT '',
+        since_at        String DEFAULT '',
+        agents          Array(String),
+        session_count   UInt32 DEFAULT 0,
+        candidate_count UInt32 DEFAULT 0,
+        status          LowCardinality(String) DEFAULT 'completed',
+        error           String DEFAULT '',
+        created_at      DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+    )
+    ENGINE = MergeTree
+    ORDER BY (created_at, id)
+    """.strip()
+
+
+def pickup_candidates_ddl() -> str:
+    return """
+    CREATE TABLE IF NOT EXISTS pickup_candidates (
+        id                String,
+        run_id            String,
+        source_agent      LowCardinality(String),
+        session_id        String,
+        source_hash       String,
+        project_id        String DEFAULT '',
+        cwd               String DEFAULT '',
+        content           String,
+        kind              LowCardinality(String) DEFAULT 'free',
+        tags              Array(String),
+        suggested_scope   LowCardinality(String) DEFAULT 'personal',
+        reason            String DEFAULT '',
+        evidence          String DEFAULT '',
+        confidence        Float32 DEFAULT 0,
+        status            LowCardinality(String) DEFAULT 'pending',
+        decision_reason   String DEFAULT '',
+        memory_ref        String DEFAULT '',
+        version           UInt32 DEFAULT 1,
+        prompt_version    String DEFAULT '',
+        content_hash      String DEFAULT '',
+        created_at        DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC'),
+        updated_at        DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY id
+    """.strip()
+
+
 def events_ddl() -> str:
     return """
     CREATE TABLE IF NOT EXISTS events (
@@ -190,6 +242,8 @@ def bootstrap_statements(embed_dim: int = DEFAULT_EMBED_DIM) -> List[str]:
         projects_ddl(embed_dim),
         blacklist_ddl(),
         raw_transcripts_ddl(),
+        pickup_runs_ddl(),
+        pickup_candidates_ddl(),
         events_ddl(),
     ]
 
