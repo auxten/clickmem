@@ -36,6 +36,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _env_list(name: str, default: list[str]) -> list[str]:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -105,6 +112,35 @@ class Config:
     )
     project_write_timeout_seconds: float = field(
         default_factory=lambda: _env_float("CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS", 3.0)
+    )
+
+    # Daily Pickup runs outside the server process.  It reads local agent
+    # transcripts, invokes the user's existing non-interactive agent CLI, then
+    # submits only raw evidence + proposals to the personal ClickMem actor.
+    pickup_agents: list[str] = field(
+        default_factory=lambda: _env_list("CLICKMEM_PICKUP_AGENTS", ["codex", "claude_code"])
+    )
+    pickup_summarizer: str = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_PICKUP_SUMMARIZER", "auto")
+    )
+    pickup_command: str | None = field(
+        default_factory=lambda: os.environ.get("CLICKMEM_PICKUP_COMMAND") or None
+    )
+    pickup_lookback_hours: int = field(
+        default_factory=lambda: _env_int("CLICKMEM_PICKUP_LOOKBACK_HOURS", 26)
+    )
+    pickup_max_session_chars: int = field(
+        default_factory=lambda: _env_int("CLICKMEM_PICKUP_MAX_SESSION_CHARS", 60_000)
+    )
+    pickup_hour: int = field(default_factory=lambda: _env_int("CLICKMEM_PICKUP_HOUR", 18))
+    pickup_minute: int = field(default_factory=lambda: _env_int("CLICKMEM_PICKUP_MINUTE", 0))
+    pickup_notify: bool = field(
+        default_factory=lambda: _env_bool("CLICKMEM_PICKUP_NOTIFY", True)
+    )
+    pickup_spool_dir: Path = field(
+        default_factory=lambda: _env_path(
+            "CLICKMEM_PICKUP_SPOOL_DIR", Path.home() / ".clickmem" / "pickup" / "spool"
+        )
     )
 
     embedding_model: str = field(

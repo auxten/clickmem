@@ -36,6 +36,11 @@ class Transport(Protocol):
     def get_raw(self, session_id: Optional[str] = None, last: int = 50, agent: Optional[str] = None) -> List[dict[str, Any]]: ...
     def project_link(self, a: str, b: str, reason: str = "") -> dict[str, Any]: ...
     def projects_list(self) -> List[dict[str, Any]]: ...
+    def pickup_ingest(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def pickup_list(self, **kwargs: Any) -> dict[str, Any]: ...
+    def pickup_accept(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]: ...
+    def pickup_dismiss(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]: ...
+    def pickup_snooze(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class LocalTransport:
@@ -249,6 +254,47 @@ class LocalTransport:
 
         return [p.to_dict() for p in list_all()]
 
+    def pickup_ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from clickmem import pickup, raw
+
+        sessions = list(payload.get("sessions") or [])
+        for session in sessions:
+            raw.append(
+                str(session.get("text") or ""),
+                session_id=str(session.get("session_id") or ""),
+                agent=str(session.get("agent") or ""),
+                project_id=str(session.get("project_id") or ""),
+                role="session",
+                meta={**(session.get("meta") or {}), "pickup_run_id": payload.get("run_id", "")},
+            )
+        return pickup.ingest_run(
+            run_id=str(payload.get("run_id") or ""),
+            summarizer=str(payload.get("summarizer") or ""),
+            prompt_version=str(payload.get("prompt_version") or ""),
+            since_at=str(payload.get("since_at") or ""),
+            sessions=sessions,
+        )
+
+    def pickup_list(self, **kwargs: Any) -> dict[str, Any]:
+        from clickmem.pickup import list_candidates
+
+        return list_candidates(**kwargs)
+
+    def pickup_accept(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        from clickmem.pickup import accept
+
+        return accept(candidate_id, **kwargs)
+
+    def pickup_dismiss(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        from clickmem.pickup import dismiss
+
+        return dismiss(candidate_id, **kwargs)
+
+    def pickup_snooze(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        from clickmem.pickup import snooze
+
+        return snooze(candidate_id, **kwargs)
+
 
 class RemoteTransport:
     """HTTP transport against a ClickMem server (set via ``CLICKMEM_REMOTE``)."""
@@ -392,12 +438,53 @@ class RemoteTransport:
     def projects_list(self) -> List[dict[str, Any]]:
         return self._get("/v1/projects")
 
+    def pickup_ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/v1/pickup/runs", payload)
+
+    def pickup_list(self, **kwargs: Any) -> dict[str, Any]:
+        return self._get(
+            "/v1/pickup/candidates",
+            params={key: value for key, value in kwargs.items() if value is not None},
+        )
+
+    def pickup_accept(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._post(f"/v1/pickup/candidates/{candidate_id}/accept", kwargs)
+
+    def pickup_dismiss(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._post(f"/v1/pickup/candidates/{candidate_id}/dismiss", kwargs)
+
+    def pickup_snooze(self, candidate_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._post(f"/v1/pickup/candidates/{candidate_id}/snooze", kwargs)
+
 
 def get_transport() -> Transport:
     """Return the right transport based on ``CLICKMEM_REMOTE``."""
     cfg = get_config(refresh=True)
     if cfg.remote_url:
         return RemoteTransport(cfg.remote_url, api_key=cfg.api_key)
+    return LocalTransport()
+
+
+def get_actor_transport() -> Transport:
+    """Prefer the running personal actor, falling back to an unopened local DB.
+
+    Daily Pickup is commonly reviewed while the service owns the embedded
+    store. Probing here prevents a CLI/MCP review command from becoming a
+    second local writer.
+    """
+    from clickmem.local_or_remote import in_server_process
+
+    if in_server_process():
+        return LocalTransport()
+    cfg = get_config(refresh=True)
+    url = (cfg.remote_url or cfg.server_url()).rstrip("/")
+    remote = RemoteTransport(url, api_key=cfg.api_key, timeout=1.0)
+    try:
+        if remote.health().get("ok"):
+            return remote
+    except Exception:
+        if cfg.remote_url:
+            raise
     return LocalTransport()
 
 

@@ -54,6 +54,7 @@ It is a memory safe, not a memory firehose.
 pip install clickmem
 clickmem service install
 clickmem hooks install
+clickmem pickup setup            # optional daily Codex/Claude review inbox
 clickmem dashboard open
 ```
 
@@ -65,10 +66,11 @@ At the start of a task, connected agents recall opportunistically: derive the cu
 
 ## How Memories Enter
 
-There are two deliberate paths:
+There are three deliberate paths:
 
 1. **Committed by an agent or tool.** A connected agent calls `clickmem_remember` only after it has decided a conclusion is worth keeping.
 2. **Imported from curated docs.** You import files such as `AGENTS.md`, `CLAUDE.md`, and `.cursor/rules/*.mdc` that already represent reviewed knowledge.
+3. **Picked from a daily inbox.** A local batch job asks your existing Codex or Claude CLI to turn recent sessions into atomic proposals. Proposals stay outside recall until you choose Personal or Project in the Pickup Inbox.
 
 Everything else is just evidence. Raw chats, hook events, and transcripts may be kept for traceability, but they do not become memory until someone promotes them.
 
@@ -91,6 +93,7 @@ The dashboard is the human control room for the memory safe:
 - Browse, search, edit, pin, forget, and blacklist memories.
 - Resolve conflicts side by side.
 - Inspect recall traces to see why a result matched.
+- Review AI-prepared Pickup candidates; accept personally, share with a project, edit, snooze, or dismiss as temporary.
 - Promote raw transcript snippets into deliberate memories.
 - Check connected agents and hook health.
 
@@ -108,7 +111,7 @@ One local process serves REST, MCP SSE, and the dashboard on the same port. Stor
 
 Startup recall can filter by tags before vector ranking, so operational memories such as deployment or git workflow notes surface only when the current task asks for that class of context.
 
-The server does not decide what your beliefs are. It stores, retrieves, revises, and audits memories that were explicitly committed.
+The server does not decide what your beliefs are and never runs an LLM. The optional Daily Pickup timer invokes the user's existing agent CLI in a separate batch process, then submits inert proposals to the personal actor. It stores, retrieves, revises, and audits only memories that were explicitly committed.
 
 ## Reference
 

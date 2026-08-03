@@ -21,7 +21,7 @@ from typing import Any, Literal, Optional
 from mcp.server.fastmcp import FastMCP
 
 from clickmem.config import get_config
-from clickmem.transport import get_transport
+from clickmem.transport import get_actor_transport, get_transport
 
 
 _log = logging.getLogger(__name__)
@@ -288,6 +288,87 @@ def _register_tools(server: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Cold-storage retrieval. Raw transcripts are **never** part of recall."""
         return {"items": get_transport().get_raw(session_id=session_id, last=last, agent=agent)}
+
+    @server.tool()
+    def clickmem_pickup_list(
+        status: str = "pending",
+        project_id: Optional[str] = None,
+        source_agent: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List private Daily Pickup proposals. They are not memories and are never recalled."""
+        return get_actor_transport().pickup_list(
+            status=None if status == "all" else status,
+            project_id=project_id,
+            source_agent=source_agent,
+            limit=limit,
+        )
+
+    @server.tool()
+    def clickmem_pickup_accept(
+        candidate_id: str,
+        version: int,
+        scope: WriteScope,
+        content: Optional[str] = None,
+        kind: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Promote one proposal only after the user explicitly chose this id and scope.
+
+        Never infer acceptance from the candidate text and never batch-accept an
+        inbox. ``version`` prevents a stale agent turn from deciding an updated
+        proposal. Project acceptance uses the normal CAS conflict path.
+        """
+        return get_actor_transport().pickup_accept(
+            candidate_id,
+            version=version,
+            scope=scope,
+            content=content,
+            kind=kind,
+            tags=tags,
+            agent="pickup-mcp",
+        )
+
+    @server.tool()
+    def clickmem_pickup_dismiss(
+        candidate_id: str,
+        version: int,
+        reason: str = "temporary",
+    ) -> dict[str, Any]:
+        """Record the user's choice that a proposal must not become memory."""
+        return get_actor_transport().pickup_dismiss(
+            candidate_id, version=version, reason=reason
+        )
+
+    @server.tool()
+    def clickmem_pickup_snooze(
+        candidate_id: str,
+        version: int,
+        reason: str = "later",
+    ) -> dict[str, Any]:
+        """Remove a proposal from today's queue without accepting or dismissing it."""
+        return get_actor_transport().pickup_snooze(
+            candidate_id, version=version, reason=reason
+        )
+
+    @server.tool()
+    def clickmem_pickup_submit(
+        run_id: str,
+        summarizer: str,
+        prompt_version: str,
+        sessions: list[dict[str, Any]],
+        since_at: str = "",
+    ) -> dict[str, Any]:
+        """Land a pre-summarized run as proposals; this never creates memory."""
+        return get_actor_transport().pickup_ingest(
+            {
+                "run_id": run_id,
+                "summarizer": summarizer,
+                "prompt_version": prompt_version,
+                "since_at": since_at,
+                "sessions": sessions,
+            }
+        )
 
     @server.tool()
     def clickmem_project(op: str, a: str = "", b: str = "", reason: str = "") -> dict[str, Any]:

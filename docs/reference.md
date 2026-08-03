@@ -8,6 +8,7 @@ This page keeps the operational details out of the main README. It covers CLI us
 pip install clickmem
 clickmem service install        # background server on :9527
 clickmem hooks install          # install hooks for detected agents
+clickmem pickup setup           # daily Codex/Claude candidate inbox
 clickmem dashboard open         # http://127.0.0.1:9527/dashboard
 ```
 
@@ -89,6 +90,35 @@ It skips likely noise:
 
 `AGENTS.md` is parsed bullet by bullet. Each bullet becomes a discrete, idempotent memory.
 
+### Daily Pickup
+
+Daily Pickup scans recent local Codex and Claude Code sessions, removes common
+credentials, and invokes an existing non-interactive agent CLI to prepare zero
+or more atomic proposals. The job never opens chDB/DAO: it submits sanitized
+raw evidence and proposals to the personal ClickMem actor. If the actor is
+offline, it spools the batch under `~/.clickmem/pickup/spool` for the next run.
+
+```bash
+clickmem pickup setup --summarizer auto --hour 18 --minute 0
+clickmem pickup now                 # manual run
+clickmem pickup review              # open /dashboard/pickup
+clickmem pickup list
+clickmem pickup accept <id> --version <n> --scope personal
+clickmem pickup accept <id> --version <n> --scope project
+clickmem pickup dismiss <id> --version <n> --reason temporary
+```
+
+| Data | Recallable | Writer |
+| --- | :-: | --- |
+| Sanitized raw transcript | no | Personal ClickMem actor |
+| Pickup candidate | no | Personal ClickMem actor |
+| Accepted personal/project memory | yes | Normal Memory API; project writes use CAS |
+
+Candidate acceptance requires its current version and an explicit scope. A
+stale review returns HTTP 409. Project acceptance follows the same immediate
+CAS/conflict detection as any other project memory. There is deliberately no
+"accept all automatically" operation.
+
 ## Managing Memories
 
 | Action | Meaning | CLI |
@@ -144,6 +174,7 @@ Main areas:
 - Conflicts
 - Recall Lab
 - Raw transcripts
+- Pickup Inbox
 - Agents
 - Imports
 - Blacklist
@@ -289,6 +320,10 @@ Agents should prefer MCP tools when available. When only shell access is availab
 | `clickmem recall-trace` | `clickmem_recall_trace` |
 | `clickmem project link` | `clickmem_project` |
 | `clickmem store list/use/new` | `clickmem_store` |
+| `clickmem pickup list` | `clickmem_pickup_list` |
+| `clickmem pickup accept` | `clickmem_pickup_accept` |
+| `clickmem pickup dismiss` | `clickmem_pickup_dismiss` |
+| `clickmem pickup snooze` | `clickmem_pickup_snooze` |
 
 ## REST Surface
 
@@ -303,6 +338,8 @@ Representative endpoints:
 - `/v1/blacklist`
 - `/v1/projects`
 - `/v1/raw`
+- `/v1/pickup/runs`
+- `/v1/pickup/candidates`
 - `/v1/agents`
 - `/v1/events`
 - `/v1/stats/*`
@@ -328,6 +365,14 @@ Representative endpoints:
 | `CLICKMEM_PROJECT_DURABLE_URL` | unset | Optional object-storage namespace for shared project memory |
 | `CLICKMEM_PROJECT_DURABLE_ID` | `team` | Shared project store id inside the project namespace |
 | `CLICKMEM_PROJECT_WRITE_TIMEOUT_SECONDS` | `3` | Seconds to retry CAS/lease contention before returning HTTP 409 |
+| `CLICKMEM_PICKUP_AGENTS` | `codex,claude_code` | Comma-separated local transcript adapters scanned by Daily Pickup |
+| `CLICKMEM_PICKUP_SUMMARIZER` | `auto` | `auto`, `codex`, `claude`, or `command` |
+| `CLICKMEM_PICKUP_COMMAND` | unset | Custom non-interactive summarizer command; JSON is read from stdout |
+| `CLICKMEM_PICKUP_LOOKBACK_HOURS` | `26` | Daily session scan window; idempotent candidate ids prevent duplicates |
+| `CLICKMEM_PICKUP_MAX_SESSION_CHARS` | `60000` | Sanitized transcript cap per model call |
+| `CLICKMEM_PICKUP_HOUR` / `CLICKMEM_PICKUP_MINUTE` | `18` / `0` | Default local timer schedule |
+| `CLICKMEM_PICKUP_NOTIFY` | `true` | Show a best-effort OS notification when a daily batch is ready |
+| `CLICKMEM_PICKUP_SPOOL_DIR` | `~/.clickmem/pickup/spool` | Offline batch queue when the actor is unavailable |
 | `CLICKMEM_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
 | `CLICKMEM_CONFLICT_THRESHOLD` | `0.92` | Cosine similarity above which divergent content is flagged as a conflict |
 | `CLICKMEM_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |

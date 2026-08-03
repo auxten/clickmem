@@ -28,7 +28,7 @@ from rich.table import Table
 
 from clickmem import __version__
 from clickmem.config import get_config
-from clickmem.transport import get_transport
+from clickmem.transport import get_actor_transport, get_transport
 
 
 app = typer.Typer(
@@ -427,6 +427,165 @@ def project_list_cmd() -> None:
     _print(get_transport().projects_list())
 
 
+# ---------- Daily Pickup -------------------------------------------------
+
+pickup_app = typer.Typer(
+    help="AI prepares candidates from local agent sessions; you explicitly pick what becomes memory.",
+    no_args_is_help=True,
+)
+app.add_typer(pickup_app, name="pickup")
+
+
+@pickup_app.command("setup")
+def pickup_setup(
+    summarizer: str = typer.Option("auto", help="auto | codex | claude | command"),
+    agent: list[str] = typer.Option([], "--agent", help="repeatable adapter (default: codex + claude_code)"),
+    hour: Optional[int] = typer.Option(None, min=0, max=23, help="daily local hour"),
+    minute: Optional[int] = typer.Option(None, min=0, max=59, help="daily local minute"),
+) -> None:
+    """Detect local agents and install the launchd/systemd daily timer."""
+    from clickmem import adapters as adapters_mod
+    from clickmem import pickup_service
+    from clickmem.pickup_sync import resolve_summarizer
+
+    cfg = get_config(refresh=True)
+    selected_agents = agent or cfg.pickup_agents
+    selected_hour = cfg.pickup_hour if hour is None else hour
+    selected_minute = cfg.pickup_minute if minute is None else minute
+    detected = {
+        name: bool(adapters_mod.get(name) and adapters_mod.get(name).detect())
+        for name in selected_agents
+    }
+    resolved, _ = resolve_summarizer(summarizer, cfg.pickup_command)
+    result = pickup_service.install(
+        hour=selected_hour,
+        minute=selected_minute,
+        summarizer=resolved,
+        agents=selected_agents,
+    )
+    _print(
+        {
+            **result,
+            "schedule": f"{selected_hour:02d}:{selected_minute:02d}",
+            "summarizer": resolved,
+            "agents": detected,
+            "promise": "AI prepares candidates; 0 memories are added automatically",
+        }
+    )
+
+
+@pickup_app.command("now")
+def pickup_now(
+    since_hours: Optional[int] = typer.Option(None, min=1, help="override lookback window"),
+    agent: list[str] = typer.Option([], "--agent", help="repeatable adapter"),
+    summarizer: Optional[str] = typer.Option(None, help="auto | codex | claude | command"),
+) -> None:
+    """Scan recent sessions, summarize them, and submit only inbox candidates."""
+    from clickmem.pickup_sync import run_daily
+
+    _print(
+        run_daily(
+            since_hours=since_hours,
+            agent_names=agent or None,
+            summarizer=summarizer,
+        )
+    )
+
+
+@pickup_app.command("list")
+def pickup_list(
+    status: str = typer.Option("pending", help="pending | dismissed | snoozed | accepted_* | all"),
+    project_id: Optional[str] = typer.Option(None, "--project", "--project-id"),
+    source_agent: Optional[str] = typer.Option(None, "--agent"),
+    limit: int = typer.Option(100, min=1, max=500),
+) -> None:
+    """List private inbox candidates; these rows are never recalled."""
+    _print(
+        get_actor_transport().pickup_list(
+            status=None if status == "all" else status,
+            project_id=project_id,
+            source_agent=source_agent,
+            limit=limit,
+        )
+    )
+
+
+@pickup_app.command("accept")
+def pickup_accept(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1, help="version shown by pickup list"),
+    scope: str = typer.Option(..., "--scope", help="personal | project"),
+    content: Optional[str] = typer.Option(None, help="edit before accepting"),
+    kind: Optional[str] = typer.Option(None),
+    tag: list[str] = typer.Option([], "--tag"),
+) -> None:
+    """Explicitly promote one current candidate into memory."""
+    if scope not in {"personal", "project"}:
+        raise typer.BadParameter("scope must be personal or project")
+    _print(
+        get_actor_transport().pickup_accept(
+            candidate_id,
+            version=version,
+            scope=scope,
+            content=content,
+            kind=kind,
+            tags=_normalize_tags(tag) if tag else None,
+            agent="pickup-cli",
+        )
+    )
+
+
+@pickup_app.command("dismiss")
+def pickup_dismiss(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1),
+    reason: str = typer.Option("temporary"),
+) -> None:
+    """Mark a proposal as temporary or otherwise not worth remembering."""
+    _print(
+        get_actor_transport().pickup_dismiss(
+            candidate_id, version=version, reason=reason
+        )
+    )
+
+
+@pickup_app.command("snooze")
+def pickup_snooze(
+    candidate_id: str = typer.Argument(...),
+    version: int = typer.Option(..., "--version", min=1),
+    reason: str = typer.Option("later"),
+) -> None:
+    _print(
+        get_actor_transport().pickup_snooze(
+            candidate_id, version=version, reason=reason
+        )
+    )
+
+
+@pickup_app.command("review")
+def pickup_review() -> None:
+    """Open the Pickup Inbox in the dashboard."""
+    cfg = get_config(refresh=True)
+    url = f"{(cfg.remote_url or cfg.server_url()).rstrip('/')}/dashboard/pickup"
+    console.print(f"opening {url}")
+    webbrowser.open(url)
+
+
+@pickup_app.command("status")
+def pickup_status() -> None:
+    from clickmem.pickup_service import status
+
+    _print(status())
+
+
+@pickup_app.command("uninstall")
+def pickup_uninstall() -> None:
+    """Remove only the daily timer; existing candidates and memories remain."""
+    from clickmem.pickup_service import uninstall
+
+    _print(uninstall())
+
+
 store_app = typer.Typer(
     help="Memory stores: list them, switch, create. A store is one whole "
          "memory database; your selection is recorded per user in "
@@ -665,7 +824,16 @@ def wipe(
     from clickmem.backend import get_backend
 
     backend = get_backend()
-    for table in ("memories", "memory_history", "projects", "blacklist", "raw_transcripts", "events"):
+    for table in (
+        "memories",
+        "memory_history",
+        "projects",
+        "blacklist",
+        "raw_transcripts",
+        "pickup_runs",
+        "pickup_candidates",
+        "events",
+    ):
         try:
             backend.execute(f"TRUNCATE TABLE IF EXISTS {table}")
         except Exception as e:  # noqa: BLE001

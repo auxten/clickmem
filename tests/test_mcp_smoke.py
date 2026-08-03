@@ -40,6 +40,11 @@ def test_mcp_server_lists_expected_tools(backend):
         "clickmem_conflicts",
         "clickmem_resolve",
         "clickmem_get_raw",
+        "clickmem_pickup_list",
+        "clickmem_pickup_accept",
+        "clickmem_pickup_dismiss",
+        "clickmem_pickup_snooze",
+        "clickmem_pickup_submit",
         "clickmem_project",
         "clickmem_review_dedup",
     }

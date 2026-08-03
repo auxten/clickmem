@@ -262,6 +262,64 @@ async def test_raw_landing_then_get_raw(client):
     assert r.status_code == 200
 
 
+# ---------- Daily Pickup -------------------------------------------------
+
+
+async def test_pickup_run_requires_explicit_accept_before_memory(client):
+    payload = {
+        "run_id": "daily-1",
+        "summarizer": "codex",
+        "prompt_version": "pickup-v1",
+        "since_at": "2026-08-03T00:00:00+00:00",
+        "sessions": [
+            {
+                "session_id": "codex-session-1",
+                "agent": "codex",
+                "source_hash": "source-v1",
+                "project_id": "chdb-io/chdb",
+                "cwd": "/work/chdb",
+                "text": "The release process uses signed tags.",
+                "candidates": [
+                    {
+                        "content": "chDB releases use signed tags.",
+                        "kind": "decision",
+                        "tags": ["release"],
+                        "suggested_scope": "project",
+                        "reason": "Stable release policy",
+                        "evidence": "The session confirmed signed tags.",
+                        "confidence": 0.9,
+                    }
+                ],
+            }
+        ],
+    }
+    landed = await client.post("/v1/pickup/runs", json=payload)
+    assert landed.status_code == 200
+    assert landed.json()["candidate_count"] == 1
+
+    candidates = await client.get("/v1/pickup/candidates")
+    assert candidates.status_code == 200
+    candidate = candidates.json()["items"][0]
+    assert candidate["status"] == "pending"
+
+    memories_before = await client.get("/v1/memories", params={"source": "pickup"})
+    assert memories_before.json()["total"] == 0
+
+    accepted = await client.post(
+        f"/v1/pickup/candidates/{candidate['id']}/accept",
+        json={"version": candidate["version"], "scope": "personal"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["accepted"] is True
+    assert accepted.json()["candidate"]["status"] == "accepted_personal"
+
+    stale = await client.post(
+        f"/v1/pickup/candidates/{candidate['id']}/dismiss",
+        json={"version": candidate["version"], "reason": "temporary"},
+    )
+    assert stale.status_code == 409
+
+
 # ---------- Projects ------------------------------------------------------
 
 

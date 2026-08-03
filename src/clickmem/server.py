@@ -32,6 +32,7 @@ from clickmem import events as events_mod
 from clickmem import history as history_mod
 from clickmem import import_docs as import_docs_mod
 from clickmem import memories as memories_mod
+from clickmem import pickup as pickup_mod
 from clickmem import projects as projects_mod
 from clickmem import raw as raw_mod
 from clickmem import recall as recall_mod
@@ -134,6 +135,49 @@ class EventCreate(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class PickupProposal(BaseModel):
+    content: str
+    kind: str = "free"
+    tags: List[str] = Field(default_factory=list)
+    suggested_scope: WriteScope = "personal"
+    reason: str = ""
+    evidence: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class PickupSessionCreate(BaseModel):
+    session_id: str
+    agent: str
+    source_hash: str
+    project_id: str = ""
+    cwd: str = ""
+    text: str = ""
+    meta: dict = Field(default_factory=dict)
+    candidates: List[PickupProposal] = Field(default_factory=list)
+
+
+class PickupRunCreate(BaseModel):
+    run_id: str
+    summarizer: str
+    prompt_version: str
+    since_at: str = ""
+    sessions: List[PickupSessionCreate] = Field(default_factory=list)
+
+
+class PickupAcceptRequest(BaseModel):
+    version: int = Field(ge=1)
+    scope: WriteScope
+    content: Optional[str] = None
+    kind: Optional[str] = None
+    tags: Optional[List[str]] = None
+    agent: str = "pickup"
+
+
+class PickupDecisionRequest(BaseModel):
+    version: int = Field(ge=1)
+    reason: str = "temporary"
+
+
 # ---------- App factory ---------------------------------------------------
 
 
@@ -193,6 +237,15 @@ def create_app() -> FastAPI:
     @app.exception_handler(scopes_mod.ProjectWorkerError)
     async def _project_worker_error(_request: Request, exc: Exception):
         return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(pickup_mod.CandidateVersionConflict)
+    async def _pickup_version_conflict(
+        _request: Request, exc: pickup_mod.CandidateVersionConflict
+    ):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "stale pickup candidate", "candidate": exc.candidate.to_dict()},
+        )
 
     async def _memory_embedding_worker() -> None:
         """Drain queued memory embeddings without keeping write clients waiting."""
@@ -681,6 +734,105 @@ def create_app() -> FastAPI:
     ):
         # Dashboard uses /v1/get-raw; the plan documents both spellings.
         return await raw_get(session_id=session_id, agent=agent, last=last)  # type: ignore[misc]
+
+    # ---------- Daily Pickup --------------------------------------------
+
+    @app.post("/v1/pickup/runs", dependencies=[Depends(auth)])
+    async def pickup_runs_create(body: PickupRunCreate):
+        sessions = [session.model_dump() for session in body.sessions]
+
+        def _land_run() -> dict[str, Any]:
+            # The personal actor is the only process that lands evidence and
+            # proposals. The external daily job never opens DAO/chDB.
+            for session in sessions:
+                raw_mod.append(
+                    session.get("text", ""),
+                    session_id=session["session_id"],
+                    agent=session["agent"],
+                    project_id=session.get("project_id", ""),
+                    role="session",
+                    meta={**(session.get("meta") or {}), "pickup_run_id": body.run_id},
+                )
+            return pickup_mod.ingest_run(
+                run_id=body.run_id,
+                summarizer=body.summarizer,
+                prompt_version=body.prompt_version,
+                since_at=body.since_at,
+                sessions=sessions,
+            )
+
+        return await asyncio.to_thread(_land_run)
+
+    @app.get("/v1/pickup/runs", dependencies=[Depends(auth)])
+    async def pickup_runs_list(limit: int = Query(30, ge=1, le=500)):
+        return await asyncio.to_thread(pickup_mod.list_runs, limit)
+
+    @app.get("/v1/pickup/candidates", dependencies=[Depends(auth)])
+    async def pickup_candidates_list(
+        status: Optional[str] = "pending",
+        project_id: Optional[str] = None,
+        source_agent: Optional[str] = None,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=500),
+    ):
+        try:
+            selected_status = None if status in {None, "", "all"} else status
+            return await asyncio.to_thread(
+                pickup_mod.list_candidates,
+                status=selected_status,
+                project_id=project_id,
+                source_agent=source_agent,
+                offset=offset,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/accept", dependencies=[Depends(auth)])
+    async def pickup_candidates_accept(candidate_id: str, body: PickupAcceptRequest):
+        try:
+            result = await asyncio.to_thread(
+                pickup_mod.accept,
+                candidate_id,
+                version=body.version,
+                scope=body.scope,
+                content=body.content,
+                kind=body.kind,
+                tags=body.tags,
+                agent=body.agent,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        memory_result = result.get("memory") or {}
+        if memory_result.get("status") == "cas_conflict":
+            raise HTTPException(status_code=409, detail=result)
+        return result
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/dismiss", dependencies=[Depends(auth)])
+    async def pickup_candidates_dismiss(candidate_id: str, body: PickupDecisionRequest):
+        try:
+            return await asyncio.to_thread(
+                pickup_mod.dismiss,
+                candidate_id,
+                version=body.version,
+                reason=body.reason,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
+
+    @app.post("/v1/pickup/candidates/{candidate_id}/snooze", dependencies=[Depends(auth)])
+    async def pickup_candidates_snooze(candidate_id: str, body: PickupDecisionRequest):
+        try:
+            return await asyncio.to_thread(
+                pickup_mod.snooze,
+                candidate_id,
+                version=body.version,
+                reason=body.reason or "later",
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="pickup candidate not found") from exc
 
     # ---------- Agents ----------------------------------------------------
 
