@@ -1,3 +1,5 @@
+
+
 # ClickMem
 
 ![ClickMem — memory safe for humans and AI](assets/clickmem-architecture.png)
@@ -48,7 +50,7 @@ It is a memory safe, not a memory firehose.
 ## Quick Start
 
 ```bash
-pip install clickmem
+pip install clickmem  # Requires Python 3.10+
 clickmem service install
 clickmem hooks install
 clickmem dashboard open
